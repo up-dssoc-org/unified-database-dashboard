@@ -4,6 +4,8 @@ import { api } from '@/api/client'
 import { auth } from '@/stores/auth'
 import DataTable from '@/components/table/DataTable.vue'
 import TablePager from '@/components/table/TablePager.vue'
+import AddEditModal from '@/components/generic/AddEditModal.vue'
+import DeleteModal from '@/components/generic/DeleteModal.vue'
 
 const page = ref(1)
 const result = ref(null)
@@ -11,7 +13,24 @@ const loading = ref(true)
 const error = ref('')
 const search = ref('')
 
+// Add-role modal, plus the state AddEditModal renders while the create runs.
+const adding = ref(false)
+const creating = ref(false)
+const createError = ref('')
+
+// The role open in the edit modal, plus the same pair of states for the save.
+const editTarget = ref(null)
+const saving = ref(false)
+const editError = ref('')
+
+// The role awaiting delete confirmation, plus the state DeleteModal renders
+// while the request is in flight.
+const deleteTarget = ref(null)
+const deleting = ref(false)
+const deleteError = ref('')
+
 const canRead = computed(() => auth.can('read:all'))
+const canCreate = computed(() => auth.can('create:all'))
 const canEdit = computed(() => auth.can('update:all'))
 const canDelete = computed(() => auth.can('delete:all'))
 const hasAnyAction = computed(() => canEdit.value || canDelete.value)
@@ -37,13 +56,115 @@ async function load() {
   }
 }
 
-// TODO: open the edit-role modal once the API exposes a user-role update endpoint.
-function editRole(role) {}
+function addRole() {
+  createError.value = ''
+  adding.value = true
+}
 
-// TODO: call the delete endpoint once the API exposes one for user roles.
-function deleteRole(role) {}
+function cancelAdd() {
+  adding.value = false
+  createError.value = ''
+}
 
-const roleId = (r) => r?._id ?? r?.role_id
+async function createRole(values) {
+  creating.value = true
+  createError.value = ''
+  try {
+    await api.addUserRole(values)
+    adding.value = false
+    await load()
+  } catch (e) {
+    // Kept in the modal so the typed values survive and can be retried.
+    createError.value = e?.detail || 'Failed to add user role.'
+  } finally {
+    creating.value = false
+  }
+}
+
+function editRole(role) {
+  editError.value = ''
+  editTarget.value = role
+}
+
+function cancelEdit() {
+  editTarget.value = null
+  editError.value = ''
+}
+
+async function saveRole(values) {
+  const role = editTarget.value
+  if (!role) return
+  saving.value = true
+  editError.value = ''
+  try {
+    await api.updateUserRole(role.role_id, values)
+    editTarget.value = null
+    await load()
+  } catch (e) {
+    // Kept in the modal so the edits survive and can be retried.
+    editError.value = e?.detail || 'Failed to save user role.'
+  } finally {
+    saving.value = false
+  }
+}
+
+function askDeleteRole(role) {
+  deleteError.value = ''
+  deleteTarget.value = role
+}
+
+function cancelDelete() {
+  deleteTarget.value = null
+  deleteError.value = ''
+}
+
+async function confirmDelete() {
+  const role = deleteTarget.value
+  if (!role) return
+  deleting.value = true
+  deleteError.value = ''
+  try {
+    await api.deleteUserRole(role.role_id)
+    deleteTarget.value = null
+    await load()
+  } catch (e) {
+    // Kept in the modal so the role stays on screen and can be retried.
+    deleteError.value = e?.detail || 'Failed to delete user role.'
+  } finally {
+    deleting.value = false
+  }
+}
+
+// Row identity for the table. The API addresses a role by its numeric
+// `role_id`, which is what the write calls above pass.
+const roleKey = (r) => r?._id ?? r?.role_id
+
+// Shared by the add and edit modals: both endpoints take the same three keys.
+// `permissions` arrives from the API as an array and the chips field binds to
+// one directly, so an edit opens with the existing permissions already chipped.
+const roleFields = [
+  {
+    key: 'role_name',
+    label: 'Role name',
+    type: 'string',
+    required: true,
+    placeholder: 'Committee Head',
+  },
+  {
+    key: 'description',
+    label: 'Description',
+    type: 'string',
+    required: true,
+    placeholder: 'What this role is for',
+  },
+  {
+    key: 'permissions',
+    label: 'Permissions',
+    type: 'chips',
+    placeholder: 'read:all, update:member',
+    hint: 'Type or paste permissions separated by commas. Enter adds the one you are typing.',
+  },
+]
 
 const columns = [
   { key: 'role_id', label: 'Role ID', cellClass: 'figure' },
@@ -68,7 +189,7 @@ const rowActions = computed(() => [
     danger: true,
     show: canDelete.value,
     ariaLabel: (r) => `Delete ${r.role_name}`,
-    onClick: deleteRole,
+    onClick: askDeleteRole,
   },
 ])
 
@@ -103,6 +224,10 @@ const lastOnPage = computed(() =>
         <label for="q">Find on this page</label>
         <input id="q" v-model="search" type="search" placeholder="Role, description, permission" />
       </div>
+      <button v-if="canCreate" class="btn" @click="addRole">
+        <span class="material-symbols-outlined">add</span>
+        Add user role
+      </button>
     </div>
   </header>
 
@@ -119,7 +244,7 @@ const lastOnPage = computed(() =>
     <DataTable
       :columns="columns"
       :rows="rows"
-      :row-key="roleId"
+      :row-key="roleKey"
       :actions="rowActions"
       :show-actions="hasAnyAction"
       :empty-text="
@@ -138,6 +263,45 @@ const lastOnPage = computed(() =>
 
     <TablePager v-model:page="page" :total-pages="result.total_pages" />
   </template>
+
+  <AddEditModal
+    v-if="adding"
+    title="Add user role"
+    description="Creates a role and the permissions it grants to accounts."
+    submit-label="Add user role"
+    :fields="roleFields"
+    :busy="creating"
+    :error="createError"
+    @close="cancelAdd"
+    @submit="createRole"
+  />
+
+  <AddEditModal
+    v-if="editTarget"
+    title="Edit user role"
+    :description="`Updating ${editTarget.role_name}.`"
+    submit-label="Save user role"
+    :fields="roleFields"
+    :values="editTarget"
+    :busy="saving"
+    :error="editError"
+    @close="cancelEdit"
+    @submit="saveRole"
+  />
+
+  <DeleteModal
+    v-if="deleteTarget"
+    title="Delete user role"
+    confirm-label="Delete user role"
+    :busy="deleting"
+    :error="deleteError"
+    @close="cancelDelete"
+    @confirm="confirmDelete"
+  >
+    Delete <strong>{{ deleteTarget.role_name }}</strong>
+    (<span class="figure">role {{ deleteTarget.role_id }}</span>)? Accounts
+    assigned to it will lose the permissions it grants.
+  </DeleteModal>
 </template>
 
 <style scoped>

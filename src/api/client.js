@@ -116,6 +116,15 @@ export const api = {
   getUsers: ({ page = 1 }) => request('/admin/users', { params: { page }}),
 
   getUserRoles: ({ page = 1 }) => request('/admin/user-roles', { params: { page }}),
+  addUserRole: ({ role_name, description, permissions}) => request('/user-roles', { method: 'POST', body: { role_name, description, permissions }}),
+  updateUserRole: (user_role_id, { role_name = null, description = null, permissions = null }) =>
+    request('/user-roles', {
+      method: 'PATCH',
+      params: { user_role_id },
+      body: { role_name, description, permissions },
+    }),
+  deleteUserRole: (user_role_id) =>
+    request('/user-roles', { method: 'DELETE', params: { user_role_id } }),
 
   changePassword: ({ old_password, new_password }) => request('/recovery/change-password', { method: 'POST', body: { old_password, new_password }})
 }

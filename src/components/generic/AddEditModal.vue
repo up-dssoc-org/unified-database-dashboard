@@ -16,11 +16,12 @@
  *   key             key this field's value takes in the emitted payload
  *   label           visible label; falls back to `key`
  *   type            'string' | 'number' | 'boolean' | 'select' | 'password'
- *                   (default 'string'). 'password' masks the input; it is
- *                   otherwise treated (and trimmed) like a string.
+ *                   | 'chips' (default 'string'). 'password' masks the input;
+ *                   it is otherwise treated (and trimmed) like a string.
+ *                   'chips' collects a list from comma-separated text.
  *   required        blocks submit while empty
  *   default         initial value; `values` takes precedence in edit mode
- *   placeholder     string/number/select only
+ *   placeholder     string/number/select/chips only
  *   hint            helper text under the field
  *   disabled        renders the control read-only
  *   options         select only — ['UPD'] or [{ value, label }]
@@ -30,9 +31,12 @@
  *
  * Values are normalised on submit: numbers come through as Number, blank
  * optional text comes through as null (the key is always present), and
- * booleans are always true/false.
+ * booleans are always true/false. A 'chips' field is always an array — empty
+ * comes through as `[]`, not null, so a cleared list reads as "no values"
+ * rather than "unchanged" on a PATCH.
  */
 import { computed, onMounted, onUnmounted, reactive, ref, useId } from 'vue'
+import ChipsInput from './ChipsInput.vue'
 
 const props = defineProps({
   /** Falls back to 'Add record' / 'Edit record' depending on the mode. */
@@ -86,6 +90,16 @@ const inputType = (field) => {
   return type === 'number' || type === 'password' ? type : 'text'
 }
 
+/**
+ * Seeds a chips field. The API stores these as arrays, but a `default` is
+ * easier to write as the comma-separated text the field itself accepts, so
+ * both are taken.
+ */
+function toList(value) {
+  const parts = Array.isArray(value) ? value : String(value ?? '').split(',')
+  return parts.map((v) => String(v).trim()).filter(Boolean)
+}
+
 function initialValue(field) {
   // An edit starts from the record; a missing key there still means "empty",
   // so only `undefined` falls through to the field's own default.
@@ -93,6 +107,7 @@ function initialValue(field) {
   const seed = existing === undefined ? field.default : existing
 
   if (typeOf(field) === 'boolean') return Boolean(seed)
+  if (typeOf(field) === 'chips') return toList(seed)
   // null is how the API spells an unset optional; inputs want ''.
   return seed === undefined || seed === null ? '' : seed
 }
@@ -141,6 +156,10 @@ function validate(field) {
 
   if (typeOf(field) === 'boolean') return ''
 
+  if (typeOf(field) === 'chips') {
+    return field.required && !value.length ? `${label} is required.` : ''
+  }
+
   const blank = value === '' || value === null || value === undefined
   if (blank) return field.required ? `${label} is required.` : ''
 
@@ -159,6 +178,9 @@ function payloadValue(field) {
   switch (typeOf(field)) {
     case 'boolean':
       return Boolean(value)
+    case 'chips':
+      // An empty list stays an empty list — see the note in the block comment.
+      return Array.isArray(value) ? [...value] : []
     case 'number':
       return value === '' || value === null ? null : Number(value)
     default: {
@@ -265,6 +287,17 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
               />
               <span>{{ field.checkboxLabel || field.label || field.key }}</span>
             </label>
+
+            <ChipsInput
+              v-else-if="typeOf(field) === 'chips'"
+              :id="fieldId(field.key)"
+              v-model="form[field.key]"
+              :placeholder="field.placeholder"
+              :disabled="busy || field.disabled"
+              :invalid="Boolean(fieldErrors[field.key])"
+              :describedby="fieldErrors[field.key] ? errorId(field.key) : undefined"
+              @input="clearError(field.key)"
+            />
 
             <input
               v-else
