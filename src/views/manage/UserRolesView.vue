@@ -195,7 +195,7 @@ const rowActions = computed(() => [
 
 // Filters the loaded page. Server-side search is not exposed yet.
 const rows = computed(() => {
-  const list = result.value?.data ?? []
+  const list = [...(result.value?.data ?? [])].sort((a, b) => a?.role_id - b?.role_id)
   const q = search.value.trim().toLowerCase()
   if (!q) return list
   return list.filter((r) =>
