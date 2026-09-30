@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { api } from '@/api/client'
 import { auth } from '@/stores/auth'
 import DataTable from '@/components/table/DataTable.vue'
+import { toast } from '@/components/generic/useToast'
 
 const result = ref(null)
 const loading = ref(true)
@@ -121,6 +122,8 @@ const rows = computed(() => {
       :empty-text="search ? 'No committee matches that search.' : 'No committees recorded yet.'"
     />
   </template>
+
+  <!-- DELETE MODAL SHOULD BE HERE -->
 </template>
 
 <style scoped>

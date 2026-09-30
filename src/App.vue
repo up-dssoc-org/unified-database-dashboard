@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 import { RouterLink, RouterView, useRouter } from 'vue-router'
 import { auth } from './stores/auth'
+import Toast from './components/generic/Toast.vue'
 
 const router = useRouter()
 const signingOut = ref(false)
@@ -60,6 +61,8 @@ async function signOut() {
 
     <main class="content">
       <RouterView />
+
+      <Toast />
     </main>
   </div>
 

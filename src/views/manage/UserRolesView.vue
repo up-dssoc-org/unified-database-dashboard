@@ -6,6 +6,7 @@ import DataTable from '@/components/table/DataTable.vue'
 import TablePager from '@/components/table/TablePager.vue'
 import AddEditModal from '@/components/generic/AddEditModal.vue'
 import DeleteModal from '@/components/generic/DeleteModal.vue'
+import { toast } from '@/components/generic/useToast'
 
 const page = ref(1)
 const result = ref(null)
@@ -72,10 +73,12 @@ async function createRole(values) {
   try {
     await api.addUserRole(values)
     adding.value = false
+    toast.success("User role created!")
     await load()
   } catch (e) {
     // Kept in the modal so the typed values survive and can be retried.
     createError.value = e?.detail || 'Failed to add user role.'
+    toast.error("Failed to add user role")
   } finally {
     creating.value = false
   }
@@ -99,10 +102,12 @@ async function saveRole(values) {
   try {
     await api.updateUserRole(role.role_id, values)
     editTarget.value = null
+    toast.success("User role updated!")
     await load()
   } catch (e) {
     // Kept in the modal so the edits survive and can be retried.
     editError.value = e?.detail || 'Failed to save user role.'
+    toast.error("Failed to update user role")
   } finally {
     saving.value = false
   }
@@ -126,10 +131,12 @@ async function confirmDelete() {
   try {
     await api.deleteUserRole(role.role_id)
     deleteTarget.value = null
+    toast.warning("User role deleted!")
     await load()
   } catch (e) {
     // Kept in the modal so the role stays on screen and can be retried.
     deleteError.value = e?.detail || 'Failed to delete user role.'
+    toast.error("Failed to delete user role!")
   } finally {
     deleting.value = false
   }

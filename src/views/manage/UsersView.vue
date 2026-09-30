@@ -2,6 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { api } from '@/api/client'
 import { auth } from '@/stores/auth'
+import { toast } from '../../components/generic/useToast'
 import DataTable from '@/components/table/DataTable.vue'
 import TablePager from '@/components/table/TablePager.vue'
 import AddEditModal from '@/components/generic/AddEditModal.vue'
@@ -56,11 +57,13 @@ async function createUser({ username, password }) {
   createError.value = ''
   try {
     await api.addUser(username, password)
+    toast.success("User created!")
     adding.value = false
     await load()
   } catch (e) {
     // Kept in the modal so the typed values survive and can be retried.
     createError.value = e?.detail || 'Failed to add user.'
+    toast.error("Failed to add user")
   } finally {
     creating.value = false
   }

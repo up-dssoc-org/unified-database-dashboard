@@ -2,6 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { api } from '@/api/client'
 import { auth } from '@/stores/auth'
+import { toast } from '@/components/generic/useToast'
 import DataTable from '@/components/table/DataTable.vue'
 import TablePager from '@/components/table/TablePager.vue'
 import AddEditModal from '@/components/generic/AddEditModal.vue'
@@ -88,9 +89,11 @@ async function createDegree(values) {
   try {
     await api.addDegree(values)
     adding.value = false
+    toast.success("Degree program added!")
     await load()
   } catch (e) {
     // Kept in the modal so the typed values survive and can be retried.
+    toast.error("Failed to add degree program")
     createError.value = e?.detail || 'Failed to add degree program.'
   } finally {
     creating.value = false
@@ -117,9 +120,11 @@ async function saveDegree(values) {
     // The row's own campus addresses the record; `values.campus_id` may be a
     // different one, which is how a degree moves between campuses.
     await api.editDegree(degree.campus_id, degreeId(degree), values)
+    toast.success("Degree program updated!")
     editTarget.value = null
     await load()
   } catch (e) {
+    toast.error("Failed to updated degree program")
     // Kept in the modal so the edits survive and can be retried.
     editError.value = e?.detail || 'Failed to save degree program.'
   } finally {
