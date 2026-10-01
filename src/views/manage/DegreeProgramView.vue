@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, inject, onMounted, ref, watch } from 'vue'
 import { api } from '@/api/client'
 import { auth } from '@/stores/auth'
 import { toast } from '@/components/generic/useToast'
@@ -7,6 +7,9 @@ import DataTable from '@/components/table/DataTable.vue'
 import TablePager from '@/components/table/TablePager.vue'
 import AddEditModal from '@/components/generic/AddEditModal.vue'
 import DeleteModal from '@/components/generic/DeleteModal.vue'
+import posthog from 'posthog-js'
+
+const isPostHogConfigured = inject('isPostHogConfigured')
 
 const page = ref(1)
 const result = ref(null)
@@ -88,6 +91,12 @@ async function createDegree(values) {
   createError.value = ''
   try {
     await api.addDegree(values)
+    if (isPostHogConfigured) {
+      posthog.capture('degree_program_created', {
+        has_college: Boolean(values.college),
+        has_college_long_name: Boolean(values.college_long),
+      })
+    }
     adding.value = false
     toast.success("Degree program added!")
     await load()
@@ -120,6 +129,12 @@ async function saveDegree(values) {
     // The row's own campus addresses the record; `values.campus_id` may be a
     // different one, which is how a degree moves between campuses.
     await api.editDegree(degree.campus_id, degreeId(degree), values)
+    if (isPostHogConfigured) {
+      posthog.capture('degree_program_updated', {
+        has_college: Boolean(values.college),
+        has_college_long_name: Boolean(values.college_long),
+      })
+    }
     toast.success("Degree program updated!")
     editTarget.value = null
     await load()

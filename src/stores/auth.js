@@ -1,5 +1,10 @@
 import { reactive, computed } from 'vue'
+import posthog from 'posthog-js'
 import { api, configureAuth } from '../api/client'
+
+const isPostHogConfigured = Boolean(
+  import.meta?.env?.VITE_POSTHOG_PROJECT_TOKEN && import.meta?.env?.VITE_POSTHOG_HOST
+)
 
 const KEY = 'dssoc.session'
 
@@ -44,6 +49,7 @@ export const auth = {
     const payload = claims(res.access_token)
     state.session = {
       token: res.access_token,
+      userId: typeof payload.sub === 'string' && payload.sub ? payload.sub : null,
       username: res.user?.username ?? payload.sub,
       member: res?.user?.member ?? null,
       hasMemberId: res?.user?.has_member_id ?? false,
@@ -51,6 +57,7 @@ export const auth = {
       exp: payload.exp
     }
     sessionStorage.setItem(KEY, JSON.stringify(state.session))
+    auth.identifyCurrentUser()
   },
 
   async logout() {
@@ -63,6 +70,13 @@ export const auth = {
     }
   },
 
+  identifyCurrentUser() {
+    const session = state.session
+    if (!isPostHogConfigured || !session?.userId) return
+
+    posthog.identify(session.userId, { username: session.username })
+  },
+
   updateMember(updatedMember) {
     if (!state.session) return
     state.session.member = updatedMember
@@ -72,6 +86,7 @@ export const auth = {
   },
 
   clear() {
+    if (isPostHogConfigured) posthog.reset()
     state.session = null
     sessionStorage.removeItem(KEY)
   }

@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, inject, onMounted, ref, watch } from 'vue'
 import { api, latestSemester, semesterCode } from '../api/client'
 import { auth } from '../stores/auth'
 import SingleReaffiliation from '../components/reaffiliation/SingleReaffiliation.vue'
@@ -7,6 +7,9 @@ import DataTable from '../components/table/DataTable.vue'
 import RowActionMenu from '../components/table/RowActionMenu.vue'
 import TablePager from '../components/table/TablePager.vue'
 import DeleteModal from '@/components/generic/DeleteModal.vue'
+import posthog from 'posthog-js'
+
+const isPostHogConfigured = inject('isPostHogConfigured')
 
 const semesters = ref([])
 const selected = ref(null)
@@ -28,6 +31,7 @@ const viewRecord = ref(null)
 
 const deleteError = ref(null)
 const deleteTarget = ref(null)
+const deleting = ref(false)
 
 onMounted(async () => {
   try {
@@ -89,6 +93,7 @@ async function confirmDelete() {
   deleteError.value = ''
   try {
     await api.deleteReaffiliation(reaff?._id)
+    if (isPostHogConfigured) posthog.capture('reaffiliation_deleted')
     deleteTarget.value = null
     await load()
   } catch (e) {

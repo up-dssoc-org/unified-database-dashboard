@@ -1,7 +1,10 @@
 <script setup>
-import { computed, reactive, ref } from 'vue'
+import { computed, inject, reactive, ref } from 'vue'
 import { auth } from '@/stores/auth'
 import { api } from '@/api/client'
+import posthog from 'posthog-js'
+
+const isPostHogConfigured = inject('isPostHogConfigured')
 
 const member = computed(() => auth.member.value)
 const isLinked = computed(() => auth.isLinkedMember.value)
@@ -93,6 +96,7 @@ async function submitEdit() {
     )
     const updated = await api.editMember(member?.value?._id, payload)
     auth.updateMember(updated ?? payload)
+    if (isPostHogConfigured) posthog.capture('member_profile_updated')
     showModal.value = false
   } catch (e) {
     saveError.value = e.detail || e.message || 'Failed to save changes.'

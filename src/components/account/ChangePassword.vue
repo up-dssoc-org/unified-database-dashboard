@@ -1,6 +1,9 @@
 <script setup>
-import { reactive, ref } from 'vue'
+import { inject, reactive, ref } from 'vue'
 import { api } from '@/api/client'
+import posthog from 'posthog-js'
+
+const isPostHogConfigured = inject('isPostHogConfigured')
 
 const showModal = ref(false)
 const saving = ref(false)
@@ -54,6 +57,7 @@ async function submitChange() {
   saving.value = true
   try {
     await api.changePassword({ old_password: form.old_password, new_password: form.new_password })
+    if (isPostHogConfigured) posthog.capture('password_changed')
     saveSuccess.value = true
     resetForm()
   } catch (e) {

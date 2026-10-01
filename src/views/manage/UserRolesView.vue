@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, inject, onMounted, ref, watch } from 'vue'
 import { api } from '@/api/client'
 import { auth } from '@/stores/auth'
 import DataTable from '@/components/table/DataTable.vue'
@@ -7,6 +7,9 @@ import TablePager from '@/components/table/TablePager.vue'
 import AddEditModal from '@/components/generic/AddEditModal.vue'
 import DeleteModal from '@/components/generic/DeleteModal.vue'
 import { toast } from '@/components/generic/useToast'
+import posthog from 'posthog-js'
+
+const isPostHogConfigured = inject('isPostHogConfigured')
 
 const page = ref(1)
 const result = ref(null)
@@ -72,6 +75,9 @@ async function createRole(values) {
   createError.value = ''
   try {
     await api.addUserRole(values)
+    if (isPostHogConfigured) {
+      posthog.capture('user_role_created', { permission_count: values.permissions?.length ?? 0 })
+    }
     adding.value = false
     toast.success("User role created!")
     await load()
@@ -101,6 +107,9 @@ async function saveRole(values) {
   editError.value = ''
   try {
     await api.updateUserRole(role.role_id, values)
+    if (isPostHogConfigured) {
+      posthog.capture('user_role_updated', { permission_count: values.permissions?.length ?? 0 })
+    }
     editTarget.value = null
     toast.success("User role updated!")
     await load()
@@ -130,6 +139,7 @@ async function confirmDelete() {
   deleteError.value = ''
   try {
     await api.deleteUserRole(role.role_id)
+    if (isPostHogConfigured) posthog.capture('user_role_deleted')
     deleteTarget.value = null
     toast.warning("User role deleted!")
     await load()

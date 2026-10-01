@@ -1,11 +1,14 @@
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, inject, onMounted, ref, watch } from 'vue'
 import { api } from '@/api/client'
 import { auth } from '@/stores/auth'
 import { toast } from '../../components/generic/useToast'
 import DataTable from '@/components/table/DataTable.vue'
 import TablePager from '@/components/table/TablePager.vue'
 import AddEditModal from '@/components/generic/AddEditModal.vue'
+import posthog from 'posthog-js'
+
+const isPostHogConfigured = inject('isPostHogConfigured')
 
 const page = ref(1)
 const result = ref(null)
@@ -57,6 +60,7 @@ async function createUser({ username, password }) {
   createError.value = ''
   try {
     await api.addUser(username, password)
+    if (isPostHogConfigured) posthog.capture('user_account_created')
     toast.success("User created!")
     adding.value = false
     await load()

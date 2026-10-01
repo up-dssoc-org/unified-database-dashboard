@@ -1,7 +1,11 @@
 <script setup>
-import { ref } from 'vue'
+import { inject, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { auth } from '../stores/auth'
+import { posthogLog } from '../logging/posthog'
+import posthog from 'posthog-js'
+
+const isPostHogConfigured = inject('isPostHogConfigured')
 
 const route = useRoute()
 const router = useRouter()
@@ -16,8 +20,11 @@ async function submit() {
   busy.value = true
   try {
     await auth.login(username.value.trim(), password.value)
+    if (isPostHogConfigured) posthog.capture('user_logged_in')
+    posthogLog.info('authentication_succeeded')
     router.push(route.query.next || { name: 'summary' })
   } catch (e) {
+    posthogLog.warn('authentication_failed')
     error.value = e.detail || 'Sign-in failed. Try again.'
     password.value = ''
   } finally {

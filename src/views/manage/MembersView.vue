@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, inject, onMounted, ref, watch } from 'vue'
 import { api, latestSemester, semesterCode } from '@/api/client'
 import { auth } from '@/stores/auth'
 import DataTable from '@/components/table/DataTable.vue'
@@ -7,6 +7,9 @@ import TablePager from '@/components/table/TablePager.vue'
 import SingleReaffiliation from '@/components/reaffiliation/SingleReaffiliation.vue'
 import AddEditModal from '@/components/generic/AddEditModal.vue'
 import DeleteModal from '@/components/generic/DeleteModal.vue'
+import posthog from 'posthog-js'
+
+const isPostHogConfigured = inject('isPostHogConfigured')
 
 const semesters = ref([])
 const selected = ref(null)
@@ -98,6 +101,7 @@ async function saveMember(values) {
   editError.value = ''
   try {
     await api.editMember(member._id, values)
+    if (isPostHogConfigured) posthog.capture('member_updated')
     editTarget.value = null
     await load()
   } catch (e) {
@@ -125,6 +129,7 @@ async function confirmDelete() {
   deleteError.value = ''
   try {
     await api.deleteMember(member._id)
+    if (isPostHogConfigured) posthog.capture('member_deleted')
     deleteTarget.value = null
     await load()
   } catch (e) {
