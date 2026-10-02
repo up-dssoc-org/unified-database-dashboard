@@ -23,6 +23,12 @@ const routes = [
     meta: { requiresAuth: true }
   },
   {
+    path: "/analytics-dashboard",
+    name: "analytics-dashboard",
+    component: () => import('./views/AnalyticsDashboardView.vue'),
+    meta: { requiresAuth: true }
+  },
+  {
     path: "/manage",
     children: [
       {

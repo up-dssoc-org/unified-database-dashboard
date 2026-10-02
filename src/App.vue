@@ -28,6 +28,11 @@ async function signOut() {
         <RouterLink :to="{ name: 'summary' }">Semester summary</RouterLink>
         <RouterLink :to="{ name: 'reaffiliations' }">Reaffiliations</RouterLink>
 
+        <div class="nav-section">
+          <p class="nav-heading">Analytics</p>
+          <RouterLink :to="{ name: 'analytics-dashboard' }">Dashboard</RouterLink>
+        </div>
+
         <div class="nav-section" :hidden="!auth?.isAdmin?.value">
           <p class="nav-heading">Admin</p>
           <span class="nav-disabled" aria-disabled="true">Dashboard</span>

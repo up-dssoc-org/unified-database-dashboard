@@ -100,6 +100,8 @@ export const api = {
   ),
 
   getReaffiliationsSummary: ({ year, semester = null, start_semester = null, end_semester = null}) => request(`/reaffiliations/summary`, { params: { year, semester, start_semester, end_semester }}),
+  
+  fetchAnalysis: (query) => request('/analytics', { method: 'POST', body: query }),
 
   getMembers: ({ year, sem, page = 1 }) => request('/members', { params: { year, sem, page } }),
   getSingleMemberHistory: ({ dssoc_id }) => request(`/members/history/${dssoc_id}`),
