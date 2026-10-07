@@ -1,12 +1,14 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
 import { api, latestSemester } from '../api/client'
-import { auth } from '../stores/auth'
+import { useAuthStore } from '../stores/auth'
 import BarChart from '../components/charts/BarChart.vue'
 import DonutChart from '../components/charts/DonutChart.vue'
 import GroupedBarChart from '../components/charts/GroupedBarChart.vue'
 
 const FALLBACK_YEAR = 2425
+
+const auth = useAuthStore();
 
 const entries = ref([]) // [{ year, semester }] from /meta/semesters
 const year = ref(null) // 2526

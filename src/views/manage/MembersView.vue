@@ -1,7 +1,7 @@
 <script setup>
 import { computed, inject, onMounted, ref, watch } from 'vue'
 import { api, latestSemester, semesterCode } from '@/api/client'
-import { auth } from '@/stores/auth'
+import { useAuthStore } from '@/stores/auth'
 import DataTable from '@/components/table/DataTable.vue'
 import TablePager from '@/components/table/TablePager.vue'
 import SingleReaffiliation from '@/components/reaffiliation/SingleReaffiliation.vue'
@@ -10,6 +10,7 @@ import DeleteModal from '@/components/generic/DeleteModal.vue'
 import posthog from 'posthog-js'
 
 const isPostHogConfigured = inject('isPostHogConfigured')
+const auth = useAuthStore();
 
 const semesters = ref([])
 const selected = ref(null)

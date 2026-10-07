@@ -1,11 +1,11 @@
 <script setup>
 import { computed, inject, reactive, ref } from 'vue'
-import { auth } from '@/stores/auth'
+import { useAuthStore } from '@/stores/auth'
 import { api } from '@/api/client'
 import posthog from 'posthog-js'
 
 const isPostHogConfigured = inject('isPostHogConfigured')
-
+const auth = useAuthStore();
 const member = computed(() => auth.member.value)
 const isLinked = computed(() => auth.isLinkedMember.value)
 const isAdmin = computed(() => auth.isAdmin.value)

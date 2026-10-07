@@ -1,14 +1,16 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { api } from '@/api/client'
-import { auth } from '@/stores/auth'
 import DataTable from '@/components/table/DataTable.vue'
 import { toast } from '@/components/generic/useToast'
+import { useAuthStore } from '@/stores/auth'
 
 const result = ref(null)
 const loading = ref(true)
 const error = ref('')
 const search = ref('')
+
+const auth = useAuthStore()
 
 const canRead = computed(() => auth.can('read:all'))
 const canCreate = computed(() => auth.can('create:all'))

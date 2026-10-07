@@ -1,10 +1,11 @@
 <script setup>
 import { computed } from 'vue'
-import { auth } from '@/stores/auth'
+import { useAuthStore } from '@/stores/auth'
 import ChangePassword from '@/components/account/ChangePassword.vue'
 
 const username = computed(() => auth.username.value)
 const permissions = computed(() => auth.permissions.value)
+const auth = useAuthStore()
 </script>
 
 <template>

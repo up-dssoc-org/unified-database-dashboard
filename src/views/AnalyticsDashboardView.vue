@@ -16,7 +16,7 @@
 import { computed, inject, onMounted, reactive, ref } from 'vue'
 import posthog from 'posthog-js'
 import { api } from '@/api/client'
-import { auth } from '@/stores/auth'
+import { useAuthStore } from '@/stores/auth'
 import DeleteModal from '@/components/generic/DeleteModal.vue'
 import { toast } from '@/components/generic/useToast'
 import DataPointBuilder from '@/components/analytics/DataPointBuilder.vue'
@@ -30,6 +30,8 @@ import {
 const isPostHogConfigured = inject('isPostHogConfigured', false)
 
 const STORAGE_KEY = 'dssoc.analytics.board'
+
+const auth = useAuthStore();
 
 /** Board entries, in display order. See `restore` for the persisted shape. */
 const points = reactive([])

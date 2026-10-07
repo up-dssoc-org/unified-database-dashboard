@@ -1,5 +1,5 @@
 import { createRouter, createWebHistory } from 'vue-router'
-import { auth } from './stores/auth'
+import { useAuthStore } from './stores/auth'
 
 const routes = [
   { path: '/', redirect: '/summary' },
@@ -65,11 +65,13 @@ const routes = [
 export const router = createRouter({ history: createWebHistory(), routes })
 
 router.beforeEach((to) => {
-  if (to.meta.requiresAuth && !auth.isAuthenticated.value) {
+  const authStore = useAuthStore();
+  if (to.meta.requiresAuth && !authStore.isAccessFresh()) {
+    if (authStore.isRefreshTokenFresh()) return next()
     return { name: 'login', query: to.fullPath === '/summary' ? {} : { next: to.fullPath } }
   }
-  if (to.meta.requiresMember && !auth.isLinkedMember.value) {
+  if (to.meta.requiresMember && !authStore.isLinkedMember.value) {
     return { name: 'summary' }
   }
-  if (to.name === 'login' && auth.isAuthenticated.value) return { name: 'summary' }
+  if (to.name === 'login' && authStore.isAccessFresh()) return { name: 'summary' }
 })

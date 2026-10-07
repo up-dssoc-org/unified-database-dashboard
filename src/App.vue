@@ -1,12 +1,13 @@
 <script setup>
 import { computed, ref } from 'vue'
 import { RouterLink, RouterView, useRouter } from 'vue-router'
-import { auth } from './stores/auth'
+import { useAuthStore } from './stores/auth'
 import Toast from './components/generic/Toast.vue'
 
 const router = useRouter()
 const signingOut = ref(false)
 const shell = computed(() => auth.isAuthenticated.value)
+const auth = useAuthStore()
 
 async function signOut() {
   signingOut.value = true
