@@ -1,6 +1,5 @@
-import { defineStore } from 'pinia';
-import { useNow, useStorage, useLocalStorage, useSessionStorage } from '@vueuse/core'
-import { ref, reactive, computed } from 'vue'
+import { defineStore } from 'pinia'
+import { StorageSerializers, useIntervalFn, useSessionStorage, useLocalStorage, useTimestamp, useNow } from '@vueuse/core'
 import posthog from 'posthog-js'
 import { api, configureAuth } from '../api/client'
 
@@ -21,152 +20,140 @@ function refreshExpiry(res, fallback = null) {
   }
 }
 
-const SESSION_KEY = 'dssoc.session';
-const SESSION_REFRESH = 'dssoc.refresh';
+// Login and refresh return the same payload shape, so the session is built in
+// one place — otherwise the two copies drift.
+function sessionFrom(res) {
+  const payload = claims(res.access_token)
+  return {
+    token: res.access_token,
+    userId: typeof payload.sub === 'string' && payload.sub ? payload.sub : null,
+    username: res.user?.username ?? payload.sub,
+    member: res.user?.member ?? null,
+    hasMemberId: res.user?.has_member_id ?? false,
+    permissions: payload.permissions ?? [],
+    exp: payload.exp,
+    refreshExp: refreshExpiry(res, payload?.refresh_exp ?? null)
+  }
+}
+
+const SESSION_KEY = 'dssoc.session'
+const SESSION_REFRESH = 'dssoc.refresh'
+
+// JWT exp is seconds since the epoch; every clock here is milliseconds.
+const isFresh = (exp, now) => {
+  return exp * 1000 > now
+}
 
 export const useAuthStore = defineStore('auth', {
   state: () => ({
-    session: null,
-    accessToken: null,
-    refreshToken: null,
-    isPostHogConfigured: isPostHogConfigured,
-    currentTime: useNow()
+    session: useSessionStorage(SESSION_KEY, null, { serializer: StorageSerializers.object }),
+    refreshToken: useLocalStorage(SESSION_REFRESH, null),
+    // NOTE: One second is granular enough to
+    // drop the shell when the session lapses in an idle tab.
+    currentTime: useTimestamp({ scheduler: (cb) => useIntervalFn(cb, 1000) }),
+    isPostHogConfigured
   }),
+
   getters: {
-    isAuthenticated: (state) => {
-      if (!state?.session) return false
-      const session = this.state?.session
-      return this.isAccessFresh()
-    },
+    isAuthenticated: (state) =>
+      isFresh(state.session?.exp, state.currentTime) ||
+      (!!state.refreshToken && isFresh(state.session?.refreshExp, state.currentTime)),
 
-    isLinkedMember: (state) => !!state?.session?.hasMemberId,
+    isLinkedMember: (state) => !!state.session?.hasMemberId,
 
-    isAdmin: (state) => {
-      const held = state?.session?.permissions ?? []
-      return held.includes('create:all')
-    },
+    // NOTE: this currently applies to editor/admin roles in the backend
+    isAdmin: (state) => (state.session?.permissions ?? []).includes('create:all'),
 
-    isAccessFresh: (state) => {
-      const session = state?.session
-      if (!session) return false
-      const expiry = state?.session?.exp
-      return (!!session && expiry * 1000 > this.currentTime())
-    },
+    username: (state) => state.session?.username ?? '',
+    permissions: (state) => state.session?.permissions ?? [],
+    member: (state) => state.session?.member ?? null,
 
-    isRefreshTokenFresh: (state) => {
-      const session = state?.session;
-      if (!session) return false
-      const refreshExpiry = state?.session?.refreshExp
-      return (!!session && refreshExpiry * 1000 > this.currentTime())
-    },
-
-    // NOTE: tbh this is redundant af with is access fresh hahahaha why use it
-    isSessionLive: (state) => {
-      if (!state?.session) return false
-      const until = s?.exp ?? null
-      return typeof until === 'number' && until * 1000 > Date.now()
-    },
-
-    can: (state) => {
-      const held = state?.session?.permissions ?? [];
-      // TODO: check if you should include the include_all flag
-      return needed.some((p) => held.includes(p)) // NOTE: this does not account for the
-      // state where all permissions should be met
+    // A getter that returns a function, so the views keep calling
+    // auth.can('read:all', 'read:member'). OR logic — any one listed grants
+    // access. Reads state when invoked, so it tracks inside the caller's
+    // computed.
+    can: (state) => (...needed) => {
+      const held = state.session?.permissions ?? []
+      return needed.some((p) => held.includes(p))
     }
   },
-  // actions shouldn't be using arrow functions, getters are allowed
-  actions: {
-    // updateAuthToken() {
-    
-    // }
 
-    load() {
+  // Arrow functions would lose `this`; actions need the store as the receiver.
+  actions: {
+    // Actions rather than getters: a navigation decision must not read a value
+    // cached before the token expired, so these sample the clock on every call.
+    isAccessFresh() {
+      return isFresh(this.session?.exp, this.currentTime) // NOTE: is date.now() really the most efficient way
+    },
+
+    isRefreshTokenFresh() {
+      return !!this.refreshToken && isFresh(this.session?.refreshExp, this.currentTime)
+    },
+
+    async login(username, password) {
+      const res = await api.authenticate(username, password)
+      this.session = sessionFrom(res)
+      this.refreshToken = res.refresh_token ?? null
+      this.identifyCurrentUser()
+    },
+
+    // Returns the new access token: the client's 401 retry reads a falsy result
+    // as "refresh failed" and abandons the request.
+    async refreshSession() {
+      if (!this.refreshToken) return null
       try {
-        const raw = sessionStorage.getItem(SESSION_KEY)
-        if (!raw) return null
-        const session = JSON.parse(raw)
-        return this.isSessionLive() ? session : null
+        const res = await api.refresh(this.refreshToken)
+        if (!res?.access_token) return null
+        this.session = sessionFrom(res)
+        // /refresh rotates the pair, but keep the old one if none came back.
+        this.refreshToken = res.refresh_token ?? this.refreshToken
+        this.identifyCurrentUser()
+        return this.session.token
       } catch {
+        // NOTE this clear does not
+        this.clear()
         return null
       }
     },
 
-    async login(username, password) {
-      const res = await api.authenticate(username, password);
-      const payload = claims(res?.access_token);
-      this.state.session = {
-        token: res?.access_token,
-        refresh_token: res?.refresh_token,
-        userId: typeof payload.sub === 'string' && payload.sub ? payload.sub : null,
-        username: res.user?.username ?? payload.sub,
-        member: res?.user?.member ?? null,
-        hasMemberId: res?.user?.has_member_id ?? false,
-        permissions: payload.permissions ?? [],
-        exp: payload.exp,
-        refreshExp: refreshExpiry(res, payload?.refresh_exp ?? null)
-      };
-      this.state.accessToken = res?.access_token;
-      this.state.refreshToken = res?.refresh_token;
-
-      useStorage(SESSION_KEY, this.state?.session);
-      useStorage(SESSION_REFRESH, this.state?.refresh_token)
-      identifyCurrentUser()
-    },
-
-    async refreshSession() {
-      const refreshToken = this.state?.refreshToken
-      if (!refreshToken) return null
-
-      const res = await api.refresh(refreshToken)
-      if (!res?.access_token) return null
-      const payload = claims(res.access_token)
-      state.session = {
-        token: res?.access_token,
-        refresh_token: res?.refresh_token,
-        userId: typeof payload.sub === 'string' && payload.sub ? payload.sub : null,
-        username: res.user?.username ?? payload.sub,
-        member: res?.user?.member ?? null,
-        hasMemberId: res?.user?.has_member_id ?? false,
-        permissions: payload.permissions ?? [],
-        exp: payload.exp,
-        refreshExp: refreshExpiry(res, payload?.refresh_exp ?? null)
-      };
-      state.accessToken = res?.access_token;
-      state.refreshToken = res?.refresh_token;
-
-      useStorage(SESSION_REFRESH, this.state?.refresh_token)
-      identifyCurrentUser()
-    },
-
     identifyCurrentUser() {
-      const session = state?.session
-      if (!isPostHogConfigured || !session?.userId) return
-
-      posthog.identify(session?.userId, { username: session?.username })
+      if (!this.isPostHogConfigured || !this.session?.userId) return
+      posthog.identify(this.session.userId, { username: this.session.username })
     },
 
-    updateSessionMember(updatedMember) {
-      if (!this.state?.session) return
-      this.state.session.member = updatedMember
-        ? { ...(this.state.session.member ?? {}), ...updatedMember }
-        : this.state.session.member
-      useStorage(SESSION_KEY, JSON.stringify(this.state.session), sessionStorage)
+    updateMember(updatedMember) {
+      if (!this.session || !updatedMember) return
+      this.session = {
+        ...this.session,
+        member: { ...(this.session.member ?? {}), ...updatedMember }
+      }
     },
 
     async logout() {
       try {
-        if (this.state?.session) await api.logout()
+        if (this.session) await api.logout()
       } catch {
         // The token is discarded locally regardless of what the server says.
       } finally {
-        clear()
+        this.clear()
       }
     },
 
     clear() {
-      this.state.session = null
-      useStorage(SESSION_KEY, null)
-      useStorage(SESSION_REFRESH, null)
+      this.session = null
+      this.refreshToken = null
     }
   }
+})
+
+// client.js stays free of store imports. These closures run at module load but
+// defer useAuthStore() to the first request, by which point app.use(pinia) has
+// installed the active pinia.
+configureAuth({
+  tokenGetter: () => {
+    const auth = useAuthStore()
+    return auth.isAccessFresh() ? auth.session.token : null
+  },
+  unauthorizedHandler: () => useAuthStore().clear(),
+  sessionRefresher: () => useAuthStore().refreshSession()
 })

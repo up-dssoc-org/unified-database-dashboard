@@ -1,7 +1,7 @@
 <script setup>
 import { computed, inject, onMounted, ref, watch } from 'vue'
 import { api, latestSemester, semesterCode } from '../api/client'
-import { auth } from '../stores/auth'
+import { useAuthStore } from '../stores/auth'
 import SingleReaffiliation from '../components/reaffiliation/SingleReaffiliation.vue'
 import DataTable from '../components/table/DataTable.vue'
 import RowActionMenu from '../components/table/RowActionMenu.vue'
@@ -18,6 +18,7 @@ const result = ref(null)
 const loading = ref(true)
 const error = ref('')
 const search = ref('')
+const auth = useAuthStore()
 
 const canRead = computed(() => auth.can('read:all', 'read:member'))
 const canEditMember = computed(() => auth.can('update:all', 'update:member'))

@@ -63,14 +63,20 @@ const routes = [
 ]
 
 export const router = createRouter({ history: createWebHistory(), routes })
+router.beforeEach(async (to) => {
+  const authStore = useAuthStore()
 
-router.beforeEach((to) => {
-  const authStore = useAuthStore();
   if (to.meta.requiresAuth && !authStore.isAccessFresh()) {
-    if (authStore.isRefreshTokenFresh()) return next()
-    return { name: 'login', query: to.fullPath === '/summary' ? {} : { next: to.fullPath } }
+    const refreshed = authStore.isRefreshTokenFresh() ? await authStore.refreshSession() : null
+    if (!refreshed) {
+      return { name: 'login', query: to.fullPath === '/summary' ? {} : { next: to.fullPath } }
+    }
   }
-  if (to.meta.requiresMember && !authStore.isLinkedMember.value) {
+
+  if (to.meta.requiresMember && !authStore.isLinkedMember) {
+    return { name: 'summary' }
+  }
+  if (to.meta.isAdmin && !authStore.isAdmin) {
     return { name: 'summary' }
   }
   if (to.name === 'login' && authStore.isAccessFresh()) return { name: 'summary' }

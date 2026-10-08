@@ -6,9 +6,9 @@ import posthog from 'posthog-js'
 
 const isPostHogConfigured = inject('isPostHogConfigured')
 const auth = useAuthStore();
-const member = computed(() => auth.member.value)
-const isLinked = computed(() => auth.isLinkedMember.value)
-const isAdmin = computed(() => auth.isAdmin.value)
+const member = computed(() => auth.member)
+const isLinked = computed(() => auth.isLinkedMember)
+const isAdmin = computed(() => auth.isAdmin)
 
 // NOTE: link-member modal not implemented yet
 function openLinkModal() {}
@@ -59,14 +59,12 @@ const form = reactive(Object.fromEntries(EDITABLE_FIELDS.map(f => [f.key, ''])))
 const formattedDate = computed({
   get() {
     const val = form.birthday
-    console.warn("Gettingvalue", val)
     if (!val) return ''
     const [mm, dd, yyyy] = val.split('/')
     // NOTE: birthday data from unified database does not properly account for string padding
     return yyyy && mm && dd ? `${yyyy}-${mm.padStart(2, '0')}-${dd.padStart(2, '0')}` : ''
   },
   set(val) {
-    console.warn("Settingvalue", val)
     if (!val) { form.birthday = ''; return }
     const [yyyy, mm, dd] = val.split('-')
     form.birthday = yyyy && mm && dd ? `${mm}/${dd}/${yyyy}` : ''

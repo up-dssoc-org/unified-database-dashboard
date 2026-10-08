@@ -38,7 +38,7 @@ const instance = axios.create({
   headers: { 
     Accept: 'application/json', 
     ...(BYPASS && {'x-vercel-protection-bypass': BYPASS}) 
-  } 
+  }
 })
 
 

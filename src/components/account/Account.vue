@@ -3,9 +3,9 @@ import { computed } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 import ChangePassword from '@/components/account/ChangePassword.vue'
 
-const username = computed(() => auth.username.value)
-const permissions = computed(() => auth.permissions.value)
 const auth = useAuthStore()
+const username = computed(() => auth.username)
+const permissions = computed(() => auth.permissions)
 </script>
 
 <template>
