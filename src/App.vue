@@ -5,9 +5,9 @@ import { useAuthStore } from './stores/auth'
 import Toast from './components/generic/Toast.vue'
 
 const router = useRouter()
-const signingOut = ref(false)
-const shell = computed(() => auth.isAuthenticated.value)
 const auth = useAuthStore()
+const signingOut = ref(false)
+const shell = computed(() => auth.isAuthenticated)
 
 async function signOut() {
   signingOut.value = true
@@ -34,7 +34,7 @@ async function signOut() {
           <RouterLink :to="{ name: 'analytics-dashboard' }">Dashboard</RouterLink>
         </div>
 
-        <div class="nav-section" :hidden="!auth?.isAdmin?.value">
+        <div class="nav-section" :hidden="!auth.isAdmin">
           <p class="nav-heading">Admin</p>
           <span class="nav-disabled" aria-disabled="true">Dashboard</span>
           <!-- NOTE: ???? -->
@@ -42,7 +42,7 @@ async function signOut() {
           <span class="nav-disabled">Activity</span>
         </div>
 
-        <div class="nav-section" :hidden="!auth?.isAdmin?.value">
+        <div class="nav-section" :hidden="!auth.isAdmin">
           <p class="nav-heading">Manage</p>
           <RouterLink :to="{ name: 'manage-committees' }">Committees</RouterLink>
           <span class="nav-disabled" aria-disabled="true">Adhoc Committees</span>
@@ -56,7 +56,7 @@ async function signOut() {
 
       <div class="account">
         <div class="account-card">
-          <p class="who">{{ auth.username.value }}</p>
+          <p class="who">{{ auth.username }}</p>
           <RouterLink :to="{ name: 'profile' }" class="profile-link">View profile →</RouterLink>
         </div>
         <button class="btn btn-quiet sign-out" :disabled="signingOut" @click="signOut">
