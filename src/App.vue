@@ -47,7 +47,7 @@ async function signOut() {
           <RouterLink :to="{ name: 'manage-committees' }">Committees</RouterLink>
           <span class="nav-disabled" aria-disabled="true">Adhoc Committees</span>
           <RouterLink :to="{ name: 'manage-degrees' }">Degree Programs</RouterLink>
-          <span class="nav-disabled">Reaffiliations</span>
+          <RouterLink :to="{ name: 'manage-reaffiliations' }">Reaffiliations</RouterLink>
           <RouterLink :to="{ name: 'manage-members' }">Members</RouterLink>
           <RouterLink :to="{ name: 'manage-user-roles' }">User Roles</RouterLink>
           <RouterLink :to="{ name: 'manage-users' }">Users</RouterLink>

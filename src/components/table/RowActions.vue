@@ -8,8 +8,12 @@ import { resolve, visibleActions } from './useActionDef'
 
 const props = defineProps({
   /**
-   * [{ key, label, icon, danger, show, ariaLabel, onClick }]
-   * `danger`, `show` and `ariaLabel` may each be a `(row) => value` function.
+   * [{ key, label, icon, danger, accent, disabled, show, ariaLabel, onClick }]
+   * `danger`, `accent`, `disabled`, `show` and `ariaLabel` may each be a
+   * `(row) => value` function.
+   *
+   * `danger` is the red destructive treatment; `accent` is the blue highlight
+   * for the action that undoes one (Restore).
    */
   actions: { type: Array, default: () => [] },
   row: { type: Object, default: null },
@@ -26,8 +30,9 @@ const labelFor = (action) => resolve(action.ariaLabel, props.row) || resolve(act
       v-for="action in shown"
       :key="action.key ?? action.label"
       class="row-btn"
-      :class="{ danger: resolve(action.danger, row) }"
+      :class="{ danger: resolve(action.danger, row), accent: resolve(action.accent, row) }"
       :aria-label="labelFor(action)"
+      :disabled="resolve(action.disabled, row)"
       @click="action.onClick?.(row)"
     >
       <span v-if="action.icon" class="material-symbols-outlined">{{ action.icon }}</span>
@@ -56,7 +61,7 @@ const labelFor = (action) => resolve(action.ariaLabel, props.row) || resolve(act
   transition: background 0.12s, border-color 0.12s;
 }
 
-.row-btn:hover {
+.row-btn:hover:not(:disabled) {
   background: #fff;
   border-color: var(--slate);
 }
@@ -74,7 +79,28 @@ const labelFor = (action) => resolve(action.ariaLabel, props.row) || resolve(act
   color: #c0392b;
 }
 
-.row-btn.danger:hover {
+.row-btn.danger:hover:not(:disabled) {
   border-color: #c0392b;
+}
+
+/* Blue highlight for the action that reverses a delete. */
+.row-btn.accent {
+  color: var(--steel);
+  border-color: var(--steel);
+  background: rgba(62, 92, 118, 0.08);
+}
+
+.row-btn.accent .material-symbols-outlined {
+  color: var(--steel);
+}
+
+.row-btn.accent:hover:not(:disabled) {
+  background: rgba(62, 92, 118, 0.16);
+  border-color: var(--steel);
+}
+
+.row-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 </style>

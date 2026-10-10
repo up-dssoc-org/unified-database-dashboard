@@ -6,6 +6,7 @@ import { toast } from '../../components/generic/useToast'
 import DataTable from '@/components/table/DataTable.vue'
 import TablePager from '@/components/table/TablePager.vue'
 import AddEditModal from '@/components/generic/AddEditModal.vue'
+import DeleteModal from '@/components/generic/DeleteModal.vue'
 import posthog from 'posthog-js'
 
 const isPostHogConfigured = inject('isPostHogConfigured')
@@ -22,8 +23,24 @@ const adding = ref(false)
 const creating = ref(false)
 const createError = ref('')
 
+// The user awaiting delete confirmation, plus the state DeleteModal renders
+// while the request is in flight.
+const deleteTarget = ref(null)
+const deleting = ref(false)
+const deleteError = ref('')
+
+// Restore has no confirmation step, so the row's own button carries the busy
+// state — holds the `_id` of the account currently being restored.
+const restoringId = ref(null)
+
 const canRead = computed(() => auth.can('read:all'))
 const canCreate = computed(() => auth.can('create:all'))
+const canDelete = computed(() => auth.can('delete:all', 'delete:user'))
+// The restore endpoint requires all three permissions, not any one of them.
+const canRestore = computed(
+  () => auth.can('read:all') && auth.can('update:all') && auth.can('delete:all')
+)
+const hasAnyAction = computed(() => canDelete.value || canRestore.value)
 
 onMounted(load)
 watch(page, load)
@@ -74,8 +91,54 @@ async function createUser({ username, password }) {
   }
 }
 
-// TODO: add the edit and delete modals once the API exposes user update and
-// delete endpoints. The table has no actions column until then.
+function askDeleteUser(user) {
+  deleteError.value = ''
+  deleteTarget.value = user
+}
+
+function cancelDelete() {
+  deleteTarget.value = null
+  deleteError.value = ''
+}
+
+async function confirmDelete() {
+  const user = deleteTarget.value
+  if (!user) return
+  deleting.value = true
+  deleteError.value = ''
+  try {
+    await api.deleteUser(user._id)
+    if (isPostHogConfigured) posthog.capture('user_account_deleted')
+    deleteTarget.value = null
+    toast.warning('User deleted!')
+    // The account stays on the page flagged as deleted, with Restore offered
+    // in place of Delete.
+    await load()
+  } catch (e) {
+    // Kept in the modal so the user stays on screen and can be retried.
+    deleteError.value = e?.detail || 'Failed to delete user.'
+    toast.error('Failed to delete user')
+  } finally {
+    deleting.value = false
+  }
+}
+
+async function restoreUser(user) {
+  if (!user || restoringId.value !== null) return
+  restoringId.value = user._id
+  try {
+    await api.restoreUser(user._id)
+    if (isPostHogConfigured) posthog.capture('user_account_restored')
+    toast.success('User restored!')
+    await load()
+  } catch (e) {
+    toast.error(e?.detail || 'Failed to restore user')
+  } finally {
+    restoringId.value = null
+  }
+}
+
+// TODO: add the edit modal once the API's user update endpoint is wired up.
 
 const userFields = [
   {
@@ -101,6 +164,30 @@ function formatDateTime(value) {
     ? value
     : date.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
 }
+
+// Delete and Restore are mutually exclusive per row: an active account can be
+// deleted, a deleted one can be restored.
+const rowActions = computed(() => [
+  {
+    key: 'delete',
+    label: 'Delete',
+    icon: 'delete',
+    danger: true,
+    show: (u) => canDelete.value && !u.is_deleted,
+    ariaLabel: (u) => `Delete ${u.username}`,
+    onClick: askDeleteUser,
+  },
+  {
+    key: 'restore',
+    label: (u) => (restoringId.value === u._id ? 'Restoring…' : 'Restore'),
+    icon: 'restore_from_trash',
+    accent: true,
+    disabled: (u) => restoringId.value === u._id,
+    show: (u) => canRestore.value && u.is_deleted,
+    ariaLabel: (u) => `Restore ${u.username}`,
+    onClick: restoreUser,
+  },
+])
 
 const columns = [
   { key: 'username', label: 'Username' },
@@ -156,6 +243,8 @@ const lastOnPage = computed(() =>
       :columns="columns"
       :rows="rows"
       row-key="_id"
+      :actions="rowActions"
+      :show-actions="hasAnyAction"
       :empty-text="
         search
           ? 'No user on this page matches that search. Try another page or clear the search.'
@@ -185,6 +274,21 @@ const lastOnPage = computed(() =>
     @close="cancelAdd"
     @submit="createUser"
   />
+
+  <DeleteModal
+    v-if="deleteTarget"
+    title="Delete user"
+    confirm-label="Delete user"
+    :busy="deleting"
+    :error="deleteError"
+    @close="cancelDelete"
+    @confirm="confirmDelete"
+  >
+    Delete <strong>{{ deleteTarget.username }}</strong>
+    (<span class="figure">user {{ deleteTarget._id }}</span>)? The account will
+    no longer be able to sign in. It stays listed here as deleted and can be
+    restored.
+  </DeleteModal>
 </template>
 
 <style scoped>
