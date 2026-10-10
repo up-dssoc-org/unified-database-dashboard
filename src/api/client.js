@@ -125,6 +125,12 @@ function cleanParams(params) {
   return out
 }
 
+function dropNull(body) {
+  return Object.fromEntries(
+    Object.entries(body).filter(([, v]) => v !== undefined && v !== null)
+  )
+}
+
 async function request(
   path,
   { method = 'GET', body, params, headers, auth = true, timeout } = {}
@@ -167,7 +173,10 @@ export const api = {
   logout: () => request('/logout', { method: 'POST' }),
 
   getCommittees: () => request('/committees'),
-  deleteCommittee: (comm_id, subcommittee) => request(`/committees/${comm_id}/${subcommittee}`, { method: 'DELETE' }),
+  getAllCommittees: ({ page = 1 } = {}) => request('/admin/committees', { params: { page } }),
+  deleteCommittee: (comm_id) => request(`/committees/${comm_id}`, { method: 'DELETE' }),
+  deleteSubcommittee: (comm_id, subcommittee) => request(`/committees/${comm_id}/${subcommittee}`, { method: 'DELETE' }),
+  restoreCommittee: (comm_id) => request(`/admin/restore/committee/${comm_id}`, { method: 'PATCH' }),
 
   getCampusDegreePrograms: (campus_id, page = 1) => request(`/campus/${campus_id}/degrees`, { params: { page }}),
   getDegrees: ({ page = 1 }) => request('/degrees', { params: { page }}), // NOTE: this will be updated when the sort is handled
@@ -198,10 +207,19 @@ export const api = {
 
   getReaffiliations: ({ year, sem, campus_id = null, comm_id = null, include_member_data = false, page = 1}) => 
     request('/reaffiliations', { params: { year, sem, campus_id, comm_id, include_member_data, page } }),
+  updateReaffiliation: ( id, { degree_id = null, year_level = null, designation = null, classification = null }) =>
+    request(`/reaffiliations/reaff/${id}`, {
+      method: 'PATCH',
+      body: dropNull({ degree_id, year_level, designation, classification }),
+    }),
   deleteReaffiliation: ( id ) => request(`/reaffiliations/reaff/${id}`, { method: 'DELETE' }, ),
+  getAllReaffiliations: ({ page = 1 } = {}) => request('/admin/reaffiliations', { params: { page }}),
+  restoreReaffiliation: (reaff_id) => request(`/admin/restore/reaff/${reaff_id}`, { method: 'PATCH' }),
 
   addUser: (username, password) => request('/user/create', { method: 'POST', body: { username, password }}),
   getUsers: ({ page = 1 }) => request('/admin/users', { params: { page }}),
+  deleteUser: (user_id) => request(`/user/${user_id}`, { method: 'DELETE' }),
+  restoreUser: (user_id) => request(`/admin/restore/user/${user_id}`, { method: 'PATCH' }),
 
   getUserRoles: ({ page = 1 }) => request('/admin/user-roles', { params: { page }}),
   addUserRole: ({ role_name, description, permissions}) => request('/user-roles', { method: 'POST', body: { role_name, description, permissions }}),
@@ -213,6 +231,8 @@ export const api = {
     }),
   deleteUserRole: (user_role_id) =>
     request('/user-roles', { method: 'DELETE', params: { user_role_id } }),
+  restoreUserRole: (user_role_id) =>
+    request(`/admin/restore/user-role/${user_role_id}`, { method: 'PATCH' }),
 
   changePassword: ({ old_password, new_password }) => request('/recovery/change-password', { method: 'POST', body: { old_password, new_password }})
 }

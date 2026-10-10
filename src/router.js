@@ -42,6 +42,11 @@ const routes = [
         component: () => import('./views/manage/DegreeProgramView.vue')
       },
       {
+        path: "reaffiliations",
+        name: "manage-reaffiliations",
+        component: () => import('./views/manage/ReaffiliationsView.vue')
+      },
+      {
         path: "members",
         name: "manage-members",
         component: () => import('./views/manage/MembersView.vue')

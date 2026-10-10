@@ -34,11 +34,19 @@ const deleteTarget = ref(null)
 const deleting = ref(false)
 const deleteError = ref('')
 
+// Restore has no confirmation step, so the row's own button carries the busy
+// state — holds the `role_id` of the role currently being restored.
+const restoringId = ref(null)
+
 const canRead = computed(() => auth.can('read:all'))
 const canCreate = computed(() => auth.can('create:all'))
 const canEdit = computed(() => auth.can('update:all'))
 const canDelete = computed(() => auth.can('delete:all'))
-const hasAnyAction = computed(() => canEdit.value || canDelete.value)
+// The restore endpoint requires all three permissions, not any one of them.
+const canRestore = computed(
+  () => auth.can('read:all') && auth.can('update:all') && auth.can('delete:all')
+)
+const hasAnyAction = computed(() => canEdit.value || canDelete.value || canRestore.value)
 
 onMounted(load)
 watch(page, load)
@@ -153,6 +161,21 @@ async function confirmDelete() {
   }
 }
 
+async function restoreRole(role) {
+  if (!role || restoringId.value !== null) return
+  restoringId.value = role.role_id
+  try {
+    await api.restoreUserRole(role.role_id)
+    if (isPostHogConfigured) posthog.capture('user_role_restored')
+    toast.success("User role restored!")
+    await load()
+  } catch (e) {
+    toast.error(e?.detail || 'Failed to restore user role')
+  } finally {
+    restoringId.value = null
+  }
+}
+
 // Row identity for the table. The API addresses a role by its numeric
 // `role_id`, which is what the write calls above pass.
 const roleKey = (r) => r?._id ?? r?.role_id
@@ -191,12 +214,14 @@ const columns = [
   { key: 'permissions', label: 'Permissions' },
 ]
 
+// Delete and Restore are mutually exclusive per row: an active role can be
+// edited or deleted, a deleted one can only be restored.
 const rowActions = computed(() => [
   {
     key: 'edit',
     label: 'Edit',
     icon: 'edit',
-    show: canEdit.value,
+    show: (r) => canEdit.value && !r.is_deleted,
     ariaLabel: (r) => `Edit ${r.role_name}`,
     onClick: editRole,
   },
@@ -205,9 +230,19 @@ const rowActions = computed(() => [
     label: 'Delete',
     icon: 'delete',
     danger: true,
-    show: canDelete.value,
+    show: (r) => canDelete.value && !r.is_deleted,
     ariaLabel: (r) => `Delete ${r.role_name}`,
     onClick: askDeleteRole,
+  },
+  {
+    key: 'restore',
+    label: (r) => (restoringId.value === r.role_id ? 'Restoring…' : 'Restore'),
+    icon: 'restore_from_trash',
+    accent: true,
+    disabled: (r) => restoringId.value === r.role_id,
+    show: (r) => canRestore.value && r.is_deleted,
+    ariaLabel: (r) => `Restore ${r.role_name}`,
+    onClick: restoreRole,
   },
 ])
 
@@ -271,6 +306,13 @@ const lastOnPage = computed(() =>
           : 'No user roles recorded yet.'
       "
     >
+      <!-- The admin endpoint also returns deleted roles; flag them so they
+           are not mistaken for active ones. -->
+      <template #cell:role_name="{ row, value }">
+        {{ value }}
+        <span v-if="row.is_deleted" class="tag figure">Deleted</span>
+      </template>
+
       <template #cell:permissions="{ value }">
         <span v-if="value?.length" class="perm-list">
           <span v-for="p in value" :key="p" class="perm-chip figure">{{ p }}</span>
@@ -373,5 +415,15 @@ const lastOnPage = computed(() =>
   border: 1px solid var(--rule);
   border-radius: 2px;
   color: var(--ink);
+}
+
+.tag {
+  margin-left: 0.5rem;
+  font-size: 0.72rem;
+  padding: 0.1rem 0.45rem;
+  background: var(--canvas);
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  color: var(--slate);
 }
 </style>
