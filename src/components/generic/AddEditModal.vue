@@ -34,6 +34,19 @@
  * booleans are always true/false. A 'chips' field is always an array — empty
  * comes through as `[]`, not null, so a cleared list reads as "no values"
  * rather than "unchanged" on a PATCH.
+ *
+ * A field whose control the built-in types do not cover — a picker that opens
+ * its own dialog, say — can be rendered by the caller through a
+ * `field:<key>` slot. The slot replaces only the control: the label, the
+ * error/hint line, validation and payload normalisation still follow the
+ * field's `type`. It receives:
+ *   field        the descriptor
+ *   id           put this on the control so the label points at it
+ *   value        the field's current form value
+ *   set          `(value) => void` — writes the value and clears its error
+ *   disabled     true while busy or when the field is disabled
+ *   invalid      true while the field is showing an error
+ *   describedby  id of the error line, when one is showing
  */
 import { computed, onMounted, onUnmounted, reactive, ref, useId } from 'vue'
 import ChipsInput from './ChipsInput.vue'
@@ -149,6 +162,12 @@ function clearError(key) {
   fieldErrors[key] = ''
 }
 
+/** Write-back for a caller-rendered `field:<key>` control. */
+function setValue(key, value) {
+  form[key] = value
+  clearError(key)
+}
+
 /** Returns a message when `field` rejects its current value, else ''. */
 function validate(field) {
   const value = form[field.key]
@@ -257,8 +276,20 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
               <span v-if="field.required" class="req" aria-hidden="true">*</span>
             </label>
 
+            <slot
+              v-if="$slots[`field:${field.key}`]"
+              :name="`field:${field.key}`"
+              :field="field"
+              :id="fieldId(field.key)"
+              :value="form[field.key]"
+              :set="(value) => setValue(field.key, value)"
+              :disabled="busy || field.disabled"
+              :invalid="Boolean(fieldErrors[field.key])"
+              :describedby="fieldErrors[field.key] ? errorId(field.key) : undefined"
+            />
+
             <select
-              v-if="typeOf(field) === 'select'"
+              v-else-if="typeOf(field) === 'select'"
               :id="fieldId(field.key)"
               v-model="form[field.key]"
               :disabled="busy || field.disabled || field.optionsLoading"

@@ -213,8 +213,23 @@ export const api = {
       body: dropNull({ degree_id, year_level, designation, classification }),
     }),
   deleteReaffiliation: ( id ) => request(`/reaffiliations/reaff/${id}`, { method: 'DELETE' }, ),
-  getAllReaffiliations: ({ page = 1 } = {}) => request('/admin/reaffiliations', { params: { page }}),
+  getAllReaffiliations: ({ page = 1, include_member_data = false } = {}) =>
+    request('/admin/reaffiliations', { params: { page, include_member_data }}),
   restoreReaffiliation: (reaff_id) => request(`/admin/restore/reaff/${reaff_id}`, { method: 'PATCH' }),
+  
+  getSingleReaffiliationHistory: (reaff_id) => request(`/reaffiliations/history/${reaff_id}`),
+  addSingleReaffiliationHistory: (reaff_id, { reaffStatus = null, remarks = null }) => request(
+    `/reaffiliations/history/${reaff_id}`,
+    { method: 'PUT', body: { status: reaffStatus, remarks } }
+  ),
+  updateSingleReaffiliationHistory: (reaff_id, history_id, { reaffStatus = null, remarks = null }) => request(
+    `/reaffiliations/history/${reaff_id}/${history_id}`,
+    { method: 'PATCH', body: { status: reaffStatus, remarks }}
+  ),
+  deleteSingleReaffiliationHistory: (reaff_id, history_id) => request(
+    `/reaffiliations/history/${reaff_id}/${history_id}`,
+    { method: 'DELETE' }
+  ),
 
   addUser: (username, password) => request('/user/create', { method: 'POST', body: { username, password }}),
   getUsers: ({ page = 1 }) => request('/admin/users', { params: { page }}),

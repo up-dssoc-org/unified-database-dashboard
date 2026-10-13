@@ -7,6 +7,7 @@ import DataTable from '@/components/table/DataTable.vue'
 import TablePager from '@/components/table/TablePager.vue'
 import AddEditModal from '@/components/generic/AddEditModal.vue'
 import DeleteModal from '@/components/generic/DeleteModal.vue'
+import OptionPickerModal from '@/components/generic/OptionPickerModal.vue'
 import posthog from 'posthog-js'
 
 const isPostHogConfigured = inject('isPostHogConfigured', false)
@@ -26,6 +27,23 @@ const status = ref('all')
 const editTarget = ref(null)
 const saving = ref(false)
 const editError = ref('')
+
+// The degree picker stacked over the edit modal. `pickedDegree` is the row
+// chosen in it, kept so the field can name the degree rather than its ID.
+const pickingDegree = ref(false)
+const pickedDegree = ref(null)
+const degreePage = ref(1)
+const degreeResult = ref(null)
+const degreesLoading = ref(false)
+const degreesError = ref('')
+// '' lists every campus's degrees; a campus ID narrows to that campus.
+const degreeCampus = ref('')
+
+// Campuses back the picker's campus filter. Loaded on first open and kept
+// after, so reopening the picker does not refetch.
+const campuses = ref([])
+const campusesLoading = ref(false)
+const campusesError = ref('')
 
 // The reaffiliation awaiting delete confirmation, plus the state DeleteModal
 // renders while the request is in flight.
@@ -60,7 +78,12 @@ async function load() {
   loading.value = true
   error.value = ''
   try {
-    result.value = await api.getAllReaffiliations({ page: page.value })
+    // The linked data carries `degree_data`, which the table and the edit
+    // modal use to name the degree instead of showing its ID.
+    result.value = await api.getAllReaffiliations({
+      page: page.value,
+      include_member_data: true,
+    })
   } catch (e) {
     result.value = null
     error.value = e.detail
@@ -71,12 +94,14 @@ async function load() {
 
 function editReaff(reaff) {
   editError.value = ''
+  pickedDegree.value = null
   editTarget.value = reaff
 }
 
 function cancelEdit() {
   editTarget.value = null
   editError.value = ''
+  pickingDegree.value = false
 }
 
 async function saveReaff(values) {
@@ -99,6 +124,66 @@ async function saveReaff(values) {
   } finally {
     saving.value = false
   }
+}
+
+async function loadCampuses() {
+  if (campuses.value.length || campusesLoading.value) return
+  campusesLoading.value = true
+  campusesError.value = ''
+  try {
+    const res = await api.getCampuses()
+    campuses.value = res?.data ?? []
+  } catch (e) {
+    campusesError.value = e?.detail || 'Could not load campuses.'
+  } finally {
+    campusesLoading.value = false
+  }
+}
+
+// Switching campus or page quickly can leave an older request still in
+// flight; only the latest one is allowed to land.
+let degreesRequest = 0
+
+async function loadDegrees() {
+  const ticket = ++degreesRequest
+  degreesLoading.value = true
+  degreesError.value = ''
+  try {
+    const res = degreeCampus.value
+      ? await api.getCampusDegreePrograms(degreeCampus.value, degreePage.value)
+      : await api.getDegrees({ page: degreePage.value })
+    if (ticket === degreesRequest) degreeResult.value = res
+  } catch (e) {
+    if (ticket !== degreesRequest) return
+    degreeResult.value = null
+    degreesError.value = e?.detail || 'Could not load degree programs.'
+  } finally {
+    if (ticket === degreesRequest) degreesLoading.value = false
+  }
+}
+
+function openDegreePicker() {
+  degreeCampus.value = ''
+  degreePage.value = 1
+  pickingDegree.value = true
+  loadCampuses()
+  loadDegrees()
+}
+
+function changeDegreeCampus() {
+  degreePage.value = 1
+  loadDegrees()
+}
+
+function changeDegreePage(next) {
+  degreePage.value = next
+  loadDegrees()
+}
+
+function pickDegree(degree, set) {
+  pickedDegree.value = degree
+  set(degree._id)
+  pickingDegree.value = false
 }
 
 function askDeleteReaff(reaff) {
@@ -150,6 +235,15 @@ async function restoreReaff(reaff) {
 
 const semesterOf = (r) => (r?.year ? `${r.year}${r.semester ?? ''}` : '')
 
+// "Computer Science (UPD)" — the program, then the campus it belongs to.
+function degreeLabel(degree) {
+  if (!degree?.course_name) return ''
+  return degree.campus_id ? `${degree.course_name} (${degree.campus_id})` : degree.course_name
+}
+
+// Names the reaffiliation in labels now that its own ID is not on screen.
+const reaffName = (r) => `${r.dssoc_id} · ${semesterOf(r)}`
+
 // API timestamps are ISO date-times; show them in the viewer's locale.
 function formatDateTime(value) {
   if (!value) return value
@@ -159,22 +253,32 @@ function formatDateTime(value) {
     : date.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
 }
 
+// What the degree field shows: the program just picked, else the one the
+// record already links to. A record whose degree did not come back linked
+// falls back to its ID so the field never reads as empty when it is not.
+function degreeFieldText(value) {
+  const label = degreeLabel(pickedDegree.value ?? editTarget.value?.degree)
+  if (label) return label
+  return value === '' || value === null ? '' : `Degree #${value}`
+}
+
 // The four fields PATCH /reaffiliations/reaff/{id} accepts. Everything else on
 // the record — the member, the semester — identifies it and is fixed.
 const reaffFields = [
   {
+    // Rendered through the `field:degree_id` slot as a picker; the type still
+    // makes the payload a number.
     key: 'degree_id',
-    label: 'Degree ID',
+    label: 'Degree program',
     type: 'number',
-    min: 1,
-    placeholder: '12',
-    hint: 'Numeric ID of the degree program, as listed under Manage → Degree Programs.',
+    hint: 'Opens the full list of degree programs, which can be narrowed to one campus.',
   },
   {
     key: 'year_level',
     label: 'Year level',
-    type: 'string',
-    placeholder: '3',
+    type: 'select',
+    placeholder: 'Leave unchanged',
+    options: ['I', 'II', 'III', 'IV', 'V'],
   },
   {
     key: 'designation',
@@ -193,10 +297,14 @@ const reaffFields = [
 ]
 
 const columns = [
-  { key: '_id', label: 'Reaff ID', cellClass: 'figure' },
   { key: 'dssoc_id', label: 'DSSOC ID', cellClass: 'figure' },
   { key: 'year', label: 'Semester', cellClass: 'figure', format: (_v, row) => semesterOf(row) },
-  { key: 'degree_id', label: 'Degree ID', cellClass: 'figure' },
+  {
+    key: 'degree',
+    label: 'Degree Program',
+    format: (degree, row) =>
+      degreeLabel(degree) || (row.degree_id != null ? `Degree #${row.degree_id}` : ''),
+  },
   { key: 'year_level', label: 'Year Level' },
   { key: 'designation', label: 'Designation' },
   { key: 'classification', label: 'Classification' },
@@ -210,6 +318,12 @@ const columns = [
   },
 ]
 
+const degreeColumns = [
+  { key: 'course_name', label: 'Course' },
+  { key: 'campus_id', label: 'Campus', cellClass: 'figure' },
+  { key: 'college', label: 'College', cellClass: 'figure' },
+]
+
 // Edit and Delete apply to an active record; a deleted one can only be
 // restored.
 const rowActions = computed(() => [
@@ -218,7 +332,7 @@ const rowActions = computed(() => [
     label: 'Edit',
     icon: 'edit',
     show: (r) => canEdit.value && !r.is_deleted,
-    ariaLabel: (r) => `Edit reaffiliation ${r._id}`,
+    ariaLabel: (r) => `Edit reaffiliation ${reaffName(r)}`,
     onClick: editReaff,
   },
   {
@@ -227,7 +341,7 @@ const rowActions = computed(() => [
     icon: 'delete',
     danger: true,
     show: (r) => canDelete.value && !r.is_deleted,
-    ariaLabel: (r) => `Delete reaffiliation ${r._id}`,
+    ariaLabel: (r) => `Delete reaffiliation ${reaffName(r)}`,
     onClick: askDeleteReaff,
   },
   {
@@ -237,7 +351,7 @@ const rowActions = computed(() => [
     accent: true,
     disabled: (r) => restoringId.value === r._id,
     show: (r) => canRestore.value && r.is_deleted,
-    ariaLabel: (r) => `Restore reaffiliation ${r._id}`,
+    ariaLabel: (r) => `Restore reaffiliation ${reaffName(r)}`,
     onClick: restoreReaff,
   },
 ])
@@ -251,10 +365,9 @@ const rows = computed(() => {
     if (status.value === 'deleted' && !r.is_deleted) return false
     if (!q) return true
     return [
-      r._id,
       r.dssoc_id,
       semesterOf(r),
-      r.degree_id,
+      degreeLabel(r.degree),
       r.year_level,
       r.designation,
       r.classification,
@@ -294,7 +407,7 @@ const lastOnPage = computed(() =>
           id="q"
           v-model="search"
           type="search"
-          placeholder="Reaff ID, DSSOC ID, semester, designation"
+          placeholder="DSSOC ID, semester, degree, designation"
         />
       </div>
     </div>
@@ -324,7 +437,7 @@ const lastOnPage = computed(() =>
     >
       <!-- The admin endpoint also returns deleted records; flag them so they
            are not mistaken for active ones. -->
-      <template #cell:_id="{ row, value }">
+      <template #cell:dssoc_id="{ row, value }">
         {{ value }}
         <span v-if="row.is_deleted" class="tag figure">Deleted</span>
       </template>
@@ -344,7 +457,65 @@ const lastOnPage = computed(() =>
     :error="editError"
     @close="cancelEdit"
     @submit="saveReaff"
-  />
+  >
+    <template #field:degree_id="{ id, value, set, disabled, invalid, describedby }">
+      <button
+        :id="id"
+        type="button"
+        class="picker-trigger"
+        :class="{ empty: !degreeFieldText(value) }"
+        :disabled="disabled"
+        aria-haspopup="dialog"
+        :aria-invalid="invalid ? 'true' : undefined"
+        :aria-describedby="describedby"
+        @click="openDegreePicker"
+      >
+        <span class="picker-text">{{ degreeFieldText(value) || 'Choose a degree program' }}</span>
+        <span class="material-symbols-outlined" aria-hidden="true">expand_more</span>
+      </button>
+
+      <OptionPickerModal
+        v-if="pickingDegree"
+        title="Choose a degree program"
+        description="Pick the program this reaffiliation is enrolled under."
+        :columns="degreeColumns"
+        :rows="degreeResult?.data ?? []"
+        :selected-key="value === '' || value === null ? null : Number(value)"
+        :page="degreePage"
+        :total-pages="degreeResult?.total_pages ?? 1"
+        :total="degreeResult?.total ?? null"
+        :loading="degreesLoading"
+        :error="degreesError"
+        :option-label="degreeLabel"
+        :empty-text="
+          degreeCampus
+            ? 'No degree programs recorded for this campus yet.'
+            : 'No degree programs recorded yet.'
+        "
+        @update:page="changeDegreePage"
+        @select="(degree) => pickDegree(degree, set)"
+        @close="pickingDegree = false"
+      >
+        <template #toolbar>
+          <div class="campus-filter">
+            <label for="degree-campus">Campus</label>
+            <select
+              id="degree-campus"
+              v-model="degreeCampus"
+              :disabled="campusesLoading"
+              @change="changeDegreeCampus"
+            >
+              <option value="">{{ campusesLoading ? 'Loading…' : 'All campuses' }}</option>
+              <option v-for="c in campuses" :key="c._id" :value="c._id">
+                {{ c.campus_name ? `${c.campus_name} (${c._id})` : c._id }}
+              </option>
+            </select>
+            <p v-if="campusesError" class="hint">{{ campusesError }}</p>
+          </div>
+        </template>
+      </OptionPickerModal>
+    </template>
+  </AddEditModal>
 
   <DeleteModal
     v-if="deleteTarget"
@@ -356,9 +527,8 @@ const lastOnPage = computed(() =>
     @confirm="confirmDelete"
   >
     Delete the <strong>{{ semesterOf(deleteTarget) }}</strong> reaffiliation of
-    <strong>{{ deleteTarget.dssoc_id }}</strong>
-    (<span class="figure">reaff {{ deleteTarget._id }}</span>)? It will drop out
-    of the member's history and the semester summaries. It stays listed here as
+    <strong>{{ deleteTarget.dssoc_id }}</strong>? It will drop out of the
+    member's history and the semester summaries. It stays listed here as
     deleted and can be restored.
   </DeleteModal>
 </template>
@@ -409,5 +579,61 @@ const lastOnPage = computed(() =>
   border: 1px solid var(--rule);
   border-radius: 2px;
   color: var(--slate);
+}
+
+/* Looks like the modal's other selects, but opens the degree picker. */
+.picker-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  width: 100%;
+  font: inherit;
+  text-align: left;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  padding: 0.55rem 0.65rem;
+  cursor: pointer;
+}
+
+.picker-trigger:focus {
+  border-color: var(--maroon);
+  outline: none;
+}
+
+.picker-trigger[aria-invalid='true'] {
+  border-color: #c0392b;
+}
+
+.picker-trigger:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.picker-trigger.empty .picker-text {
+  color: var(--slate);
+}
+
+.picker-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.picker-trigger .material-symbols-outlined {
+  font-size: 1.2rem;
+  color: var(--slate);
+}
+
+.campus-filter {
+  min-width: 16rem;
+}
+
+.campus-filter .hint {
+  margin: 0.3rem 0 0;
+  font-size: 0.8rem;
+  color: #c0392b;
 }
 </style>
