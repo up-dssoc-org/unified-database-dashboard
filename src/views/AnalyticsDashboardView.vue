@@ -21,6 +21,8 @@ import DeleteModal from '@/components/generic/DeleteModal.vue'
 import { toast } from '@/components/generic/useToast'
 import DataPointBuilder from '@/components/analytics/DataPointBuilder.vue'
 import DataPointCard from '@/components/analytics/DataPointCard.vue'
+import ExportBoardModal from '@/components/analytics/ExportBoardModal.vue'
+import { exportBoard } from '@/components/analytics/boardExport'
 import {
   MAX_DATA_POINTS,
   coerceVisualization,
@@ -50,9 +52,19 @@ const editError = ref('')
 /** Index the current drag started from, or null when nothing is being dragged. */
 const dragFrom = ref(null)
 
+// The export dialog, and the state it renders while the file is built. The
+// board element is what gets exported, so it has to be on the page.
+const boardEl = ref(null)
+const exportOpen = ref(false)
+const exporting = ref(false)
+const exportError = ref('')
+
 const canRead = computed(() => auth.can('read:all', 'read:analytics'))
 const atCapacity = computed(() => points.length >= MAX_DATA_POINTS)
 const remaining = computed(() => MAX_DATA_POINTS - points.length)
+
+/** A point still running would be exported as "Running…", so export waits for it. */
+const anyLoading = computed(() => points.some((point) => point.loading))
 
 let nextId = 1
 
@@ -270,6 +282,40 @@ function refreshAll() {
   points.forEach(run)
 }
 
+function openExport() {
+  exportError.value = ''
+  exportOpen.value = true
+}
+
+function closeExport() {
+  exportOpen.value = false
+  exportError.value = ''
+}
+
+async function exportPoints({ format, header }) {
+  if (!boardEl.value) return
+
+  exporting.value = true
+  exportError.value = ''
+  try {
+    await exportBoard(boardEl.value, { format, header })
+    if (isPostHogConfigured) {
+      posthog.capture('analytics_board_exported', {
+        format,
+        header: Boolean(header),
+        board_size: points.length,
+      })
+    }
+    exportOpen.value = false
+    toast.success(`Dashboard saved as ${format.toUpperCase()}!`)
+  } catch (e) {
+    exportError.value = e?.message || 'Could not export the dashboard.'
+    toast.error('Failed to export dashboard')
+  } finally {
+    exporting.value = false
+  }
+}
+
 function confirmClear() {
   const cleared = points.length
   points.splice(0)
@@ -297,6 +343,16 @@ function confirmClear() {
       >
         <span class="material-symbols-outlined">refresh</span>
         Refresh all
+      </button>
+      <button
+        v-if="points.length"
+        class="btn btn-quiet"
+        :disabled="!canRead || anyLoading"
+        :title="anyLoading ? 'Wait for every data point to finish running' : undefined"
+        @click="openExport"
+      >
+        <span class="material-symbols-outlined">download</span>
+        Export
       </button>
       <button
         v-if="points.length"
@@ -339,7 +395,7 @@ function confirmClear() {
       </button>
     </section>
 
-    <div v-else class="board">
+    <div v-else ref="boardEl" class="board">
       <DataPointCard
         v-for="(point, index) in points"
         :key="point.id"
@@ -378,6 +434,15 @@ function confirmClear() {
     :error="editError"
     @close="cancelEdit"
     @submit="savePoint"
+  />
+
+  <ExportBoardModal
+    v-if="exportOpen"
+    :count="points.length"
+    :busy="exporting"
+    :error="exportError"
+    @close="closeExport"
+    @submit="exportPoints"
   />
 
   <DeleteModal
