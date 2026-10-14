@@ -4,10 +4,12 @@ import { api } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
 import { toast } from '@/components/generic/useToast'
 import DataTable from '@/components/table/DataTable.vue'
+import RowActionMenu from '@/components/table/RowActionMenu.vue'
 import TablePager from '@/components/table/TablePager.vue'
 import AddEditModal from '@/components/generic/AddEditModal.vue'
 import DeleteModal from '@/components/generic/DeleteModal.vue'
 import OptionPickerModal from '@/components/generic/OptionPickerModal.vue'
+import SingleReaffiliationHistory from '@/components/reaffiliation/SingleReaffiliationHistory.vue'
 import posthog from 'posthog-js'
 
 const isPostHogConfigured = inject('isPostHogConfigured', false)
@@ -55,6 +57,10 @@ const deleteError = ref('')
 // state — holds the `_id` of the record currently being restored.
 const restoringId = ref(null)
 
+// The reaffiliation whose status history is open. The modal does its own
+// loading and writes, so nothing else is tracked here.
+const historyTarget = ref(null)
+
 const canRead = computed(() => auth.can('read:all'))
 const canEdit = computed(() => auth.can('update:all', 'update:reaff'))
 const canDelete = computed(() => auth.can('delete:all', 'delete:reaff'))
@@ -62,7 +68,12 @@ const canDelete = computed(() => auth.can('delete:all', 'delete:reaff'))
 const canRestore = computed(
   () => auth.can('read:all') && auth.can('update:all') && auth.can('delete:all')
 )
-const hasAnyAction = computed(() => canEdit.value || canDelete.value || canRestore.value)
+// Every reader of this page can open the history; writing to it is gated
+// inside the modal.
+const canViewHistory = canRead
+const hasAnyAction = computed(
+  () => canEdit.value || canViewHistory.value || canDelete.value || canRestore.value
+)
 
 onMounted(load)
 watch(page, load)
@@ -324,16 +335,22 @@ const degreeColumns = [
   { key: 'college', label: 'College', cellClass: 'figure' },
 ]
 
-// Edit and Delete apply to an active record; a deleted one can only be
-// restored.
-const rowActions = computed(() => [
+// The items of each row's overflow menu. Edit, Edit History and Delete apply
+// to an active record; a deleted one can only be restored.
+const menuItems = computed(() => [
   {
     key: 'edit',
     label: 'Edit',
     icon: 'edit',
     show: (r) => canEdit.value && !r.is_deleted,
-    ariaLabel: (r) => `Edit reaffiliation ${reaffName(r)}`,
     onClick: editReaff,
+  },
+  {
+    key: 'history',
+    label: 'Edit History',
+    icon: 'history',
+    show: (r) => canViewHistory.value && !r.is_deleted,
+    onClick: (r) => (historyTarget.value = r),
   },
   {
     key: 'delete',
@@ -341,20 +358,22 @@ const rowActions = computed(() => [
     icon: 'delete',
     danger: true,
     show: (r) => canDelete.value && !r.is_deleted,
-    ariaLabel: (r) => `Delete reaffiliation ${reaffName(r)}`,
     onClick: askDeleteReaff,
   },
   {
     key: 'restore',
     label: (r) => (restoringId.value === r._id ? 'Restoring…' : 'Restore'),
     icon: 'restore_from_trash',
-    accent: true,
-    disabled: (r) => restoringId.value === r._id,
+    // Any restore in flight blocks the others, matching restoreReaff's guard.
+    disabled: () => restoringId.value !== null,
     show: (r) => canRestore.value && r.is_deleted,
-    ariaLabel: (r) => `Restore reaffiliation ${reaffName(r)}`,
     onClick: restoreReaff,
   },
 ])
+
+// A row with nothing to offer gets no menu, rather than a button that opens
+// onto an empty list.
+const hasMenuItems = (row) => menuItems.value.some((item) => item.show(row))
 
 // Filters the loaded page. Server-side search is not exposed yet.
 const rows = computed(() => {
@@ -427,8 +446,8 @@ const lastOnPage = computed(() =>
       :columns="columns"
       :rows="rows"
       row-key="_id"
-      :actions="rowActions"
       :show-actions="hasAnyAction"
+      compact-actions
       :empty-text="
         search || status !== 'all'
           ? 'No reaffiliation on this page matches those filters. Try another page or clear them.'
@@ -440,6 +459,15 @@ const lastOnPage = computed(() =>
       <template #cell:dssoc_id="{ row, value }">
         {{ value }}
         <span v-if="row.is_deleted" class="tag figure">Deleted</span>
+      </template>
+
+      <template #actions="{ row }">
+        <RowActionMenu
+          v-if="hasMenuItems(row)"
+          :items="menuItems"
+          :row="row"
+          :aria-label="`Actions for reaffiliation ${reaffName(row)}`"
+        />
       </template>
     </DataTable>
 
@@ -516,6 +544,12 @@ const lastOnPage = computed(() =>
       </OptionPickerModal>
     </template>
   </AddEditModal>
+
+  <SingleReaffiliationHistory
+    v-if="historyTarget"
+    :reaff="historyTarget"
+    @close="historyTarget = null"
+  />
 
   <DeleteModal
     v-if="deleteTarget"

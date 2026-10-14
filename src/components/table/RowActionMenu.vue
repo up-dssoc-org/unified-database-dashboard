@@ -19,7 +19,7 @@ import { resolve, visibleActions } from './useActionDef'
 
 const props = defineProps({
   /**
-   * [{ key, label, icon, danger, show, onClick, children }]
+   * [{ key, label, icon, danger, disabled, show, onClick, children }]
    * An item with `children` renders as an expandable group instead of a button.
    */
   items: { type: Array, default: () => [] },
@@ -117,6 +117,7 @@ defineExpose({ close })
                 :key="child.key ?? child.label"
                 class="action-btn sub-btn"
                 :class="{ danger: resolve(child.danger, row) }"
+                :disabled="resolve(child.disabled, row)"
                 @click="run(child)"
               >
                 {{ resolve(child.label, row) }}
@@ -129,6 +130,7 @@ defineExpose({ close })
             v-else
             class="action-btn"
             :class="{ danger: resolve(item.danger, row) }"
+            :disabled="resolve(item.disabled, row)"
             @click="run(item)"
           >
             <span v-if="item.icon" class="material-symbols-outlined">{{ item.icon }}</span>
@@ -202,8 +204,13 @@ defineExpose({ close })
   white-space: nowrap;
 }
 
-.action-menu .action-btn:hover {
+.action-menu .action-btn:hover:not(:disabled) {
   background: var(--rule, #f0f2ee);
+}
+
+.action-menu .action-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 .action-menu .action-btn .material-symbols-outlined {
