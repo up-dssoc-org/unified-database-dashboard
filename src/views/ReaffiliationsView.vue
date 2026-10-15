@@ -138,18 +138,18 @@ const menuItems = computed(() => [
     show: canRead.value,
     onClick: (m) => (viewRecord.value = m),
   },
-  {
-    key: 'edit',
-    label: 'Edit',
-    icon: 'more_horiz',
-    show: canEditMember.value || canEditReaff.value,
-    children: [
-      // TODO: open the edit-member modal once it exists.
-      { key: 'edit-member', label: 'Edit Member', show: canEditMember.value },
-      // TODO: open the edit-reaffiliation modal once it exists.
-      { key: 'edit-reaff', label: 'Edit Reaffiliation', show: canEditReaff.value },
-    ],
-  },
+  // {
+  //   key: 'edit',
+  //   label: 'Edit',
+  //   icon: 'more_horiz',
+  //   show: canEditMember.value || canEditReaff.value,
+  //   children: [
+  //     // TODO: open the edit-member modal once it exists.
+  //     { key: 'edit-member', label: 'Edit Member', show: canEditMember.value },
+  //     // TODO: open the edit-reaffiliation modal once it exists.
+  //     { key: 'edit-reaff', label: 'Edit Reaffiliation', show: canEditReaff.value },
+  //   ],
+  // },
   {
     key: 'delete',
     label: 'Delete',
