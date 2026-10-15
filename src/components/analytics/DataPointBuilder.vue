@@ -12,42 +12,57 @@
  *   2-dimensional — `group_by` set; the answer is one value per category,
  *                   drawn as a bar chart, a line graph or a pie chart.
  *
+ * Filters are joined by AND or OR (see `FilterList`). Turning on Compare makes
+ * the point a comparison: the query is run once per series, each series adding
+ * filters of its own, and the answers are drawn together as one bar chart.
+ *
  * Passing `values` puts the dialog in edit mode: the form opens from that
  * point's query and the wording switches to editing. The payload is identical
  * either way, so the caller hands it to an add or to a replacement without
  * telling the two apart.
  *
- * The caller owns the request: `submit` fires with `{ name, spec, viz }` and the
- * dialog stays open so the caller can drive `busy` while the query runs and
- * surface `error` in place if it fails. The caller closes it by dropping the
- * `v-if` once the point lands on the board.
+ * The caller owns the request: `submit` fires with
+ * `{ name, spec, viz, orientation, series }` and the dialog stays open so the
+ * caller can drive `busy` while the query runs and surface `error` in place if
+ * it fails. The caller closes it by dropping the `v-if` once the point lands on
+ * the board.
  *
  * This is deliberately not an `AddEditModal`: that modal's schema is a flat
- * list of independent fields built once on open, whereas this one has a
- * repeating filter list and selects whose options depend on earlier answers.
+ * list of independent fields built once on open, whereas this one has
+ * repeating filter and series lists and selects whose options depend on
+ * earlier answers.
  */
 import { computed, onMounted, onUnmounted, reactive, ref, useId, watch } from 'vue'
 import {
   COLLECTIONS,
   DEFAULT_GROUPS,
   JOIN_ALIAS,
-  LIST_OPERATORS,
-  MAX_FILTERS,
   MAX_GROUPS,
   METRICS,
   MIN_GROUPS,
-  NULL_OPERATORS,
-  OPERATORS,
   addressableFields,
   collectionLabel,
   fieldsOf,
 } from '@/api/analyticsSchema'
-import { defaultVisualization, dimensionOf, visualizationsFor } from './dataPoints'
+import { CHART_COLORS } from '@/components/charts/useChartSize'
+import FilterList from './FilterList.vue'
+import { intersect, queryFromRows, rowsFromQuery, rowsProblem, sizeProblem } from './filters'
+import {
+  MAX_SERIES,
+  MIN_SERIES,
+  ORIENTATIONS,
+  coerceOrientation,
+  coerceVisualization,
+  comparisonName,
+  defaultVisualization,
+  dimensionOf,
+  visualizationsFor,
+} from './dataPoints'
 
 const props = defineProps({
   /**
-   * Existing board entry to edit — `{ name, spec, viz }`. Its presence is what
-   * puts the dialog in edit mode; omit it to create.
+   * Existing board entry to edit — `{ name, spec, viz, orientation, series }`.
+   * Its presence is what puts the dialog in edit mode; omit it to create.
    */
   values: { type: Object, default: null },
   /** Disables the form and shows progress while the caller's query runs. */
@@ -64,22 +79,9 @@ const uid = useId()
 const fieldId = (key) => `${uid}-${key}`
 const panel = ref(null)
 
-/**
- * Filter values are text in the form and typed in the query, so an edit has to
- * bring them back the other way: a list joins into the comma-separated text the
- * field accepts, and a null operator's absent value stays absent.
- */
-function seedFilters(spec) {
-  return (spec?.filters ?? []).map((filter) => {
-    const operator = filter?.operator ?? '$eq'
-    let value = ''
-    if (!NULL_OPERATORS.has(operator)) {
-      if (Array.isArray(filter?.value)) value = filter.value.join(', ')
-      else if (filter?.value !== null && filter?.value !== undefined) value = String(filter.value)
-    }
-    return { field: filter?.field ?? '', operator, value }
-  })
-}
+let nextSeriesKey = 1
+
+const blankSeries = () => ({ key: nextSeriesKey++, name: '', filters: [] })
 
 /**
  * Built once, from the point being edited when there is one. The watchers below
@@ -88,6 +90,12 @@ function seedFilters(spec) {
  */
 const source = props.values?.spec ?? null
 const seededDimension = dimensionOf(source)
+const seededSeries = (props.values?.series ?? []).map((s) => ({
+  key: nextSeriesKey++,
+  name: s.name ?? '',
+  filters: rowsFromQuery(s),
+}))
+const seededCompare = seededSeries.length >= MIN_SERIES
 
 const form = reactive({
   name: props.values?.name ?? '',
@@ -102,12 +110,16 @@ const form = reactive({
   groupBy: source?.group_by ?? '',
   limit: source?.limit ?? DEFAULT_GROUPS,
   includeDeleted: Boolean(source?.include_deleted),
-  viz: props.values?.viz ?? defaultVisualization(seededDimension),
-  filters: seedFilters(source),
+  viz: coerceVisualization(props.values?.viz, seededDimension, seededCompare),
+  orientation: coerceOrientation(props.values?.orientation),
+  filters: rowsFromQuery(source),
+  compare: seededCompare,
+  series: seededSeries,
 })
 
 /** Set on submit, cleared as soon as the offending control is touched. */
 const formError = ref('')
+const clearError = () => (formError.value = '')
 
 const join = computed(() =>
   form.joinEnabled && form.joinCollection ? { collection: form.joinCollection } : null
@@ -122,24 +134,34 @@ const foreignFieldOptions = computed(() => fieldsOf(form.joinCollection))
 const metric = computed(() => METRICS.find((m) => m.value === form.metricOperation))
 const needsMetricField = computed(() => Boolean(metric.value?.needsField))
 
-const vizOptions = computed(() => visualizationsFor(form.dimension))
+const vizOptions = computed(() => visualizationsFor(form.dimension, form.compare))
 
 const twoDimensional = computed(() => form.dimension === '2d')
 
-const canAddFilter = computed(() => form.filters.length < MAX_FILTERS)
+const canAddSeries = computed(() => form.series.length < MAX_SERIES)
 
-/** A value input is hidden for the null operators and plural for the list ones. */
-const takesValue = (operator) => !NULL_OPERATORS.has(operator)
-const takesList = (operator) => LIST_OPERATORS.has(operator)
+/** Every filter list in the form: the point's own, then each series'. */
+const allFilterLists = () => [form.filters, ...form.series.map((s) => s.filters)]
 
 // The dimensionality decides which visualizations exist, so the current pick
 // has to follow it rather than survive it.
 watch(
   () => form.dimension,
   (dimension) => {
-    form.viz = defaultVisualization(dimension)
+    form.viz = defaultVisualization(dimension, form.compare)
     if (dimension === '1d') form.groupBy = ''
-    formError.value = ''
+    clearError()
+  }
+)
+
+// A comparison is always a bar chart; leaving one hands the pick back to
+// whatever the dimensionality defaults to.
+watch(
+  () => form.compare,
+  (compare) => {
+    form.viz = coerceVisualization(form.viz, form.dimension, compare)
+    while (compare && form.series.length < MIN_SERIES) form.series.push(blankSeries())
+    clearError()
   }
 )
 
@@ -152,8 +174,8 @@ watch(
     form.metricField = ''
     form.groupBy = ''
     form.joinLocalField = ''
-    form.filters.splice(0)
-    formError.value = ''
+    for (const list of allFilterLists()) list.splice(0)
+    clearError()
   }
 )
 
@@ -163,49 +185,44 @@ watch(
     const stale = (path) => path.startsWith(`${JOIN_ALIAS}.`)
     if (stale(form.metricField)) form.metricField = ''
     if (stale(form.groupBy)) form.groupBy = ''
-    for (const filter of form.filters) {
-      if (stale(filter.field)) filter.field = ''
+    for (const list of allFilterLists()) {
+      for (const filter of list) {
+        if (stale(filter.field)) filter.field = ''
+      }
     }
     if (!form.joinEnabled) {
       form.joinCollection = ''
       form.joinLocalField = ''
       form.joinForeignField = '_id'
     }
-    formError.value = ''
+    clearError()
   }
 )
 
-function addFilter() {
-  if (!canAddFilter.value) return
-  form.filters.push({ field: '', operator: '$eq', value: '' })
-  formError.value = ''
+function addSeries() {
+  if (!canAddSeries.value) return
+  form.series.push(blankSeries())
+  clearError()
 }
 
-function removeFilter(index) {
-  form.filters.splice(index, 1)
-  formError.value = ''
+function removeSeries(index) {
+  form.series.splice(index, 1)
+  clearError()
 }
 
-/**
- * Filter values are typed as text but reach MongoDB as what they look like —
- * `year` is stored as a number and `semester` as a string, and a quoted "2425"
- * would simply match nothing.
- */
-function coerceValue(text) {
-  const trimmed = String(text ?? '').trim()
-  if (trimmed === '') return null
-  if (trimmed === 'true') return true
-  if (trimmed === 'false') return false
-  if (trimmed === 'null') return null
-  const asNumber = Number(trimmed)
-  return Number.isNaN(asNumber) ? trimmed : asNumber
+function moveSeries(index, delta) {
+  const target = index + delta
+  if (target < 0 || target >= form.series.length) return
+  form.series.splice(target, 0, ...form.series.splice(index, 1))
 }
 
-const coerceList = (text) =>
-  String(text ?? '')
-    .split(',')
-    .map((part) => coerceValue(part))
-    .filter((value) => value !== null)
+const seriesPlaceholder = (index) => ['AY2425A', 'AY2425B', 'AY2526A', 'AY2526B'][index] ?? ''
+
+const namePlaceholder = computed(() =>
+  form.compare
+    ? comparisonName(form.series.map((s, i) => ({ name: s.name.trim() || seriesPlaceholder(i) || '…' })))
+    : 'Fellows this semester'
+)
 
 /** Returns the first problem with the form, or '' when it is ready to send. */
 function problem() {
@@ -230,19 +247,33 @@ function problem() {
     return `Maximum categories must be a whole number between ${MIN_GROUPS} and ${MAX_GROUPS}.`
   }
 
-  for (const [index, filter] of form.filters.entries()) {
-    const position = `Filter ${index + 1}`
-    if (!filter.field) return `${position} needs a field.`
-    if (!takesValue(filter.operator)) continue
-    if (takesList(filter.operator)) {
-      if (!coerceList(filter.value).length) {
-        return `${position} needs at least one value, separated by commas.`
-      }
-    } else if (String(filter.value ?? '').trim() === '') {
-      return `${position} needs a value.`
-    }
-  }
+  const filterProblem = rowsProblem(form.filters)
+  if (filterProblem) return filterProblem
+  const own = queryFromRows(form.filters)
+  const tooBig = sizeProblem(own)
+  if (tooBig) return `The filters are more than one query takes: ${tooBig}.`
 
+  if (form.compare) return seriesProblem(own)
+
+  return ''
+}
+
+function seriesProblem(own) {
+  if (form.series.length < MIN_SERIES) return `A comparison needs at least ${MIN_SERIES} series.`
+
+  const seen = new Set()
+  for (const [index, s] of form.series.entries()) {
+    const label = s.name.trim()
+    if (!label) return `Series ${index + 1} needs a label for the chart.`
+    const folded = label.toLowerCase()
+    if (seen.has(folded)) return `Two series are labelled “${label}” — the chart needs them apart.`
+    seen.add(folded)
+
+    const rowProblem = rowsProblem(s.filters, `${label} filter`)
+    if (rowProblem) return rowProblem
+    const tooBig = sizeProblem(intersect(own, queryFromRows(s.filters)))
+    if (tooBig) return `${label}, with the filters above, is more than one query takes: ${tooBig}.`
+  }
   return ''
 }
 
@@ -255,14 +286,7 @@ function buildSpec() {
   const spec = {
     collection: form.collection,
     metric: { operation: form.metricOperation },
-    filters: form.filters.map((filter) => {
-      const condition = { field: filter.field, operator: filter.operator }
-      if (!takesValue(filter.operator)) return condition
-      condition.value = takesList(filter.operator)
-        ? coerceList(filter.value)
-        : coerceValue(filter.value)
-      return condition
-    }),
+    ...queryFromRows(form.filters),
     include_deleted: form.includeDeleted,
   }
 
@@ -291,7 +315,15 @@ function submit() {
   formError.value = message
   if (message) return
 
-  emit('submit', { name: form.name.trim(), spec: buildSpec(), viz: form.viz })
+  emit('submit', {
+    name: form.name.trim(),
+    spec: buildSpec(),
+    viz: form.viz,
+    orientation: form.orientation,
+    series: form.compare
+      ? form.series.map((s) => ({ name: s.name.trim(), ...queryFromRows(s.filters) }))
+      : [],
+  })
 }
 
 // A form mid-request should not close under the user, so Escape, the overlay
@@ -365,10 +397,13 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
               :id="fieldId('name')"
               v-model="form.name"
               type="text"
-              placeholder="Fellows this semester"
+              :placeholder="namePlaceholder"
               :disabled="busy"
             />
-            <p class="hint">Optional. The API names the point after the query when left blank.</p>
+            <p class="hint">
+              Optional. Left blank, the point is named
+              {{ form.compare ? 'after its series' : 'by the API after the query' }}.
+            </p>
           </div>
 
           <!-- What is being measured -->
@@ -506,80 +541,140 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
           <!-- Filters -->
           <fieldset class="group">
             <legend>Filters</legend>
+            <FilterList
+              :filters="form.filters"
+              :fields="fieldOptions"
+              :busy="busy"
+              empty-text="No filters — the measure covers every record in the source."
+              @change="clearError"
+            />
+          </fieldset>
 
-            <p v-if="!form.filters.length" class="hint no-filters">
-              No filters — the measure covers every record in the source.
+          <!-- Series: the same query, narrowed several ways and read side by side -->
+          <fieldset class="group">
+            <legend>Compare</legend>
+
+            <label class="check">
+              <input v-model="form.compare" type="checkbox" :disabled="busy" />
+              <span>Compare series side by side</span>
+            </label>
+            <p class="hint flush">
+              {{
+                form.compare
+                  ? `Each series is this query plus filters of its own, AND-ed with the filters above. ${
+                      twoDimensional
+                        ? 'Every category gets a bar per series.'
+                        : 'Each series is drawn as one bar.'
+                    }`
+                  : 'Run this query once per series — one semester against another, say — and draw the answers as one bar chart.'
+              }}
             </p>
 
-            <div v-for="(filter, index) in form.filters" :key="index" class="filter">
-              <div class="field">
-                <label :for="fieldId(`filter-field-${index}`)">Field</label>
-                <select
-                  :id="fieldId(`filter-field-${index}`)"
-                  v-model="filter.field"
-                  :disabled="busy"
-                >
-                  <option value="" disabled>Select one</option>
-                  <option v-for="f in fieldOptions" :key="f.value" :value="f.value">
-                    {{ f.label }}
-                  </option>
-                </select>
-              </div>
+            <template v-if="form.compare">
+              <div v-for="(s, index) in form.series" :key="s.key" class="series">
+                <div class="series-head">
+                  <span
+                    class="swatch"
+                    :style="{ background: CHART_COLORS[index % CHART_COLORS.length] }"
+                    aria-hidden="true"
+                  ></span>
 
-              <div class="field">
-                <label :for="fieldId(`filter-op-${index}`)">Condition</label>
-                <select :id="fieldId(`filter-op-${index}`)" v-model="filter.operator" :disabled="busy">
-                  <option v-for="o in OPERATORS" :key="o.value" :value="o.value">{{ o.label }}</option>
-                </select>
-              </div>
+                  <div class="field">
+                    <label class="sr-only" :for="fieldId(`series-${s.key}`)">
+                      Label for series {{ index + 1 }}
+                    </label>
+                    <input
+                      :id="fieldId(`series-${s.key}`)"
+                      v-model="s.name"
+                      type="text"
+                      :placeholder="seriesPlaceholder(index) || `Series ${index + 1}`"
+                      :disabled="busy"
+                      @input="clearError"
+                    />
+                  </div>
 
-              <div v-if="takesValue(filter.operator)" class="field">
-                <label :for="fieldId(`filter-value-${index}`)">Value</label>
-                <input
-                  :id="fieldId(`filter-value-${index}`)"
-                  v-model="filter.value"
-                  type="text"
-                  :placeholder="takesList(filter.operator) ? 'E&R, OPS' : '2425'"
-                  :disabled="busy"
+                  <div class="series-actions">
+                    <button
+                      type="button"
+                      class="icon-btn"
+                      :disabled="busy || index === 0"
+                      :aria-label="`Move series ${index + 1} earlier`"
+                      @click="moveSeries(index, -1)"
+                    >
+                      <span class="material-symbols-outlined">arrow_upward</span>
+                    </button>
+                    <button
+                      type="button"
+                      class="icon-btn"
+                      :disabled="busy || index === form.series.length - 1"
+                      :aria-label="`Move series ${index + 1} later`"
+                      @click="moveSeries(index, 1)"
+                    >
+                      <span class="material-symbols-outlined">arrow_downward</span>
+                    </button>
+                    <button
+                      type="button"
+                      class="icon-btn danger"
+                      :disabled="busy || form.series.length <= MIN_SERIES"
+                      :aria-label="`Remove series ${index + 1}`"
+                      :title="
+                        form.series.length <= MIN_SERIES
+                          ? `A comparison needs at least ${MIN_SERIES} series`
+                          : undefined
+                      "
+                      @click="removeSeries(index)"
+                    >
+                      <span class="material-symbols-outlined">close</span>
+                    </button>
+                  </div>
+                </div>
+
+                <FilterList
+                  :filters="s.filters"
+                  :fields="fieldOptions"
+                  :busy="busy"
+                  :subject="`${s.name.trim() || `Series ${index + 1}`} filter`"
+                  empty-text="No filters of its own — this series is the query as it stands."
+                  @change="clearError"
                 />
               </div>
-              <p v-else class="field no-value hint">Takes no value.</p>
 
               <button
                 type="button"
-                class="remove-filter"
-                :aria-label="`Remove filter ${index + 1}`"
-                :disabled="busy"
-                @click="removeFilter(index)"
+                class="btn btn-quiet add-series"
+                :disabled="busy || !canAddSeries"
+                @click="addSeries"
               >
-                <span class="material-symbols-outlined">close</span>
+                <span class="material-symbols-outlined">add</span>
+                Add series
               </button>
-            </div>
-
-            <button
-              type="button"
-              class="btn btn-quiet add-filter"
-              :disabled="busy || !canAddFilter"
-              @click="addFilter"
-            >
-              <span class="material-symbols-outlined">add</span>
-              Add filter
-            </button>
-            <p v-if="!canAddFilter" class="hint">
-              {{ MAX_FILTERS }} filters is the most one query takes.
-            </p>
+              <p v-if="!canAddSeries" class="hint flush">
+                {{ MAX_SERIES }} series is the most one chart can tell apart.
+              </p>
+            </template>
           </fieldset>
 
           <!-- How it is drawn -->
-          <div class="field">
-            <label :for="fieldId('viz')">Show as</label>
-            <select :id="fieldId('viz')" v-model="form.viz" :disabled="busy">
-              <option v-for="v in vizOptions" :key="v.value" :value="v.value">
-                {{ v.label }} — {{ v.note }}
-              </option>
-            </select>
-            <p class="hint">Changeable on the board once the point is there.</p>
+          <div class="row">
+            <div class="field">
+              <label :for="fieldId('viz')">Show as</label>
+              <select :id="fieldId('viz')" v-model="form.viz" :disabled="busy || vizOptions.length < 2">
+                <option v-for="v in vizOptions" :key="v.value" :value="v.value">
+                  {{ v.label }} — {{ form.compare ? 'Series side by side.' : v.note }}
+                </option>
+              </select>
+            </div>
+
+            <div v-if="form.viz === 'bar'" class="field narrow">
+              <label :for="fieldId('orientation')">Bars</label>
+              <select :id="fieldId('orientation')" v-model="form.orientation" :disabled="busy">
+                <option v-for="o in ORIENTATIONS" :key="o.value" :value="o.value">
+                  {{ o.label }}
+                </option>
+              </select>
+            </div>
           </div>
+          <p class="hint flush">Changeable on the board once the point is there.</p>
 
           <p v-if="formError || error" class="notice" role="alert">{{ formError || error }}</p>
 
@@ -788,30 +883,35 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
   accent-color: var(--maroon);
 }
 
-/* A filter row: field, condition, value, then the control that drops it. */
-.filter {
+/* A series: its colour and label on top, its own filters underneath. */
+.series {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  padding: 0.75rem 0.8rem 0.85rem;
+  border: 1px dashed var(--rule);
+  border-radius: 2px;
+}
+
+.series-head {
   display: grid;
-  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr) minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   gap: 0.6rem;
-  align-items: end;
-  padding-bottom: 0.85rem;
-  border-bottom: 1px dashed var(--rule);
+  align-items: center;
 }
 
-.filter:last-of-type {
-  border-bottom: 0;
-  padding-bottom: 0;
+.swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 1px;
 }
 
-.no-value {
-  margin: 0 0 0.55rem;
+.series-actions {
+  display: flex;
+  align-items: center;
 }
 
-.no-filters {
-  margin: 0;
-}
-
-.remove-filter {
+.icon-btn {
   background: none;
   border: 1px solid transparent;
   border-radius: 2px;
@@ -819,32 +919,58 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
   cursor: pointer;
   display: flex;
   align-items: center;
-  padding: 0.45rem 0.3rem;
+  padding: 0.2rem;
   transition: background 0.12s, color 0.12s;
 }
 
-.remove-filter:hover:not(:disabled) {
+.icon-btn:hover:not(:disabled) {
   background: var(--canvas);
+  color: var(--ink);
+}
+
+.icon-btn.danger:hover:not(:disabled) {
   color: var(--maroon);
 }
 
-.remove-filter:disabled {
-  opacity: 0.55;
+.icon-btn:disabled {
+  opacity: 0.35;
   cursor: not-allowed;
 }
 
-.remove-filter .material-symbols-outlined {
-  font-size: 1.1rem;
+.icon-btn .material-symbols-outlined {
+  font-size: 1.05rem;
 }
 
-.add-filter {
+.add-series {
   align-self: flex-start;
   padding: 0.4rem 0.75rem;
   font-size: 0.85rem;
 }
 
-.add-filter .material-symbols-outlined {
+.add-series .material-symbols-outlined {
   font-size: 1.05rem;
+}
+
+/* Sits directly under the control it explains, so the container's gap does the spacing. */
+.hint.flush {
+  margin: 0;
+}
+
+/* The body's gap is undone for the note under "Show as". */
+.modal-body > .hint.flush {
+  margin-top: -0.75rem;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .hint {
@@ -869,9 +995,4 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
   bottom: 0;
 }
 
-@media (max-width: 560px) {
-  .filter {
-    grid-template-columns: minmax(0, 1fr) auto;
-  }
-}
 </style>

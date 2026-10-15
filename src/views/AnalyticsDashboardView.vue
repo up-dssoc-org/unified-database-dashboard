@@ -8,8 +8,12 @@
  * drawn by `DataPointCard`. Ten points is the cap, the order is the user's, and
  * the whole board can be cleared in one action.
  *
+ * A point can also be a comparison, set up in the same builder: two or more
+ * series, each the point's query narrowed by filters of its own, run side by
+ * side and drawn as one bar chart. It takes a single slot on the board.
+ *
  * The board itself is the state worth keeping — the figures are not. Only the
- * queries, their names and the chosen visualizations are persisted (to
+ * queries, their names and how they are drawn are persisted (to
  * sessionStorage, alongside the session that authorises them); the numbers are
  * re-fetched on load so a point never shows a stale figure.
  */
@@ -25,8 +29,14 @@ import ExportBoardModal from '@/components/analytics/ExportBoardModal.vue'
 import { exportBoard } from '@/components/analytics/boardExport'
 import {
   MAX_DATA_POINTS,
+  MAX_SERIES,
+  MIN_SERIES,
+  coerceOrientation,
   coerceVisualization,
+  comparisonName,
   dimensionOf,
+  isComparison,
+  seriesSpec,
 } from '@/components/analytics/dataPoints'
 
 const isPostHogConfigured = inject('isPostHogConfigured', false)
@@ -35,7 +45,7 @@ const STORAGE_KEY = 'dssoc.analytics.board'
 
 const auth = useAuthStore();
 
-/** Board entries, in display order. See `restore` for the persisted shape. */
+/** Board entries, in display order. See `shape` for the persisted part. */
 const points = reactive([])
 
 const building = ref(false)
@@ -69,6 +79,49 @@ const anyLoading = computed(() => points.some((point) => point.loading))
 let nextId = 1
 
 /**
+ * A comparison's stored series, or none when they could not be drawn as one:
+ * every series needs a label, and there must be enough of them to compare.
+ */
+function restoreSeries(stored) {
+  if (!Array.isArray(stored)) return []
+  const series = stored
+    .slice(0, MAX_SERIES)
+    .filter((s) => typeof s?.name === 'string' && s.name)
+    .map(({ name, filters, any_of }) => ({
+      name,
+      filters: Array.isArray(filters) ? filters : [],
+      ...(Array.isArray(any_of) && any_of.length ? { any_of } : {}),
+    }))
+  return series.length >= MIN_SERIES ? series : []
+}
+
+/**
+ * The persisted part of a point, as the builder submits it. A visualization
+ * can outlive the query it belonged to only if it still suits it.
+ */
+function shape({ name, spec, viz, orientation, series = [] }) {
+  return {
+    name: typeof name === 'string' ? name : '',
+    spec,
+    series,
+    viz: coerceVisualization(viz, dimensionOf(spec), series.length >= MIN_SERIES),
+    orientation: coerceOrientation(orientation),
+  }
+}
+
+/** A point as the board holds it, before its query has run. */
+function entryOf(payload) {
+  return {
+    id: nextId++,
+    ...shape(payload),
+    resolvedName: '',
+    loading: false,
+    error: '',
+    data: null,
+  }
+}
+
+/**
  * Rebuilds the board from sessionStorage. Anything malformed is dropped rather
  * than rendered: a stored point is only as good as the query inside it, and a
  * half-written entry would fail on every refresh.
@@ -84,23 +137,18 @@ function restore() {
 
   for (const entry of stored.slice(0, MAX_DATA_POINTS)) {
     if (!entry?.spec?.collection) continue
-    points.push({
-      id: nextId++,
-      name: typeof entry.name === 'string' ? entry.name : '',
-      spec: entry.spec,
-      // A stored visualization can outlive the query it belonged to only if it
-      // still suits its dimensionality.
-      viz: coerceVisualization(entry.viz, dimensionOf(entry.spec)),
-      resolvedName: '',
-      loading: false,
-      error: '',
-      data: null,
-    })
+    points.push(entryOf({ ...entry, series: restoreSeries(entry.series) }))
   }
 }
 
 function persist() {
-  const board = points.map(({ name, spec, viz }) => ({ name, spec, viz }))
+  const board = points.map(({ name, spec, viz, orientation, series }) => ({
+    name,
+    spec,
+    viz,
+    orientation,
+    series,
+  }))
   try {
     sessionStorage.setItem(STORAGE_KEY, JSON.stringify(board))
   } catch {
@@ -108,19 +156,59 @@ function persist() {
   }
 }
 
-/** Runs one point's query and writes the answer onto the entry. */
+/**
+ * Runs every series of a comparison side by side and resolves to their
+ * answers, in series order. One failure fails the comparison — half of one
+ * would read as a whole — and names the series that failed.
+ */
+async function fetchSeries(spec, series) {
+  const results = await Promise.allSettled(
+    series.map((s) => api.fetchAnalysis(seriesSpec(spec, s)))
+  )
+  const failed = results.findIndex((r) => r.status === 'rejected')
+  if (failed >= 0) {
+    const detail = `${series[failed].name}: ${results[failed].reason?.detail || 'Could not run this query.'}`
+    throw Object.assign(new Error(detail), { detail })
+  }
+  return results.map((r) => r.value.data)
+}
+
+/** Runs a point's query — or each of its series' — and resolves to what the card draws. */
+async function answer({ spec, series }) {
+  if (series.length >= MIN_SERIES) {
+    return { data: await fetchSeries(spec, series), resolvedName: comparisonName(series) }
+  }
+  const result = await api.fetchAnalysis(spec)
+  return { data: result.data, resolvedName: result.name ?? '' }
+}
+
+/** Runs one point and writes the answer onto the entry. */
 async function run(point) {
   point.loading = true
   point.error = ''
   try {
-    const result = await api.fetchAnalysis(point.spec)
-    point.data = result.data
-    point.resolvedName = result.name ?? ''
+    Object.assign(point, await answer(point))
   } catch (e) {
     point.data = null
     point.error = e?.detail || 'Could not run this query.'
   } finally {
     point.loading = false
+  }
+}
+
+/** What analytics learns about a query: its shape, never its values. */
+function traits({ spec, series, viz, orientation }) {
+  const anyOf = spec.any_of ?? []
+  return {
+    dimension: dimensionOf(spec),
+    visualization: viz,
+    orientation: viz === 'bar' ? orientation : null,
+    collection: spec.collection,
+    metric: spec.metric?.operation,
+    joined: Boolean(spec.join),
+    filter_count: (spec.filters?.length ?? 0) + anyOf.reduce((n, b) => n + b.length, 0),
+    or_groups: anyOf.length,
+    compared_series: series.length,
   }
 }
 
@@ -145,32 +233,19 @@ function closeBuilder() {
  * the builder with its answer — the typed query survives and can be corrected
  * rather than landing on the board as a broken tile.
  */
-async function addPoint({ name, spec, viz }) {
+async function addPoint(payload) {
   if (atCapacity.value) return
 
   running.value = true
   buildError.value = ''
   try {
-    const result = await api.fetchAnalysis(spec)
-    points.push({
-      id: nextId++,
-      name,
-      spec,
-      viz,
-      resolvedName: result.name ?? '',
-      loading: false,
-      error: '',
-      data: result.data,
-    })
+    const entry = entryOf(payload)
+    Object.assign(entry, await answer(entry))
+    points.push(entry)
     persist()
     if (isPostHogConfigured) {
       posthog.capture('analytics_data_point_created', {
-        dimension: dimensionOf(spec),
-        visualization: viz,
-        collection: spec.collection,
-        metric: spec.metric?.operation,
-        joined: Boolean(spec.join),
-        filter_count: spec.filters?.length ?? 0,
+        ...traits(entry),
         board_size: points.length,
       })
     }
@@ -185,8 +260,16 @@ async function addPoint({ name, spec, viz }) {
 }
 
 function setViz(point, viz) {
-  point.viz = coerceVisualization(viz, dimensionOf(point.spec))
+  point.viz = coerceVisualization(viz, dimensionOf(point.spec), isComparison(point))
   persist()
+}
+
+function setOrientation(point, orientation) {
+  point.orientation = coerceOrientation(orientation)
+  persist()
+  if (isPostHogConfigured) {
+    posthog.capture('analytics_bar_orientation_changed', { orientation: point.orientation })
+  }
 }
 
 function editPoint(point) {
@@ -204,30 +287,19 @@ function cancelEdit() {
  * on the board changes, so a point that already works is never traded for one
  * that does not — and the point keeps its identity and its position either way.
  */
-async function savePoint({ name, spec, viz }) {
+async function savePoint(payload) {
   const point = editTarget.value
   if (!point) return
 
   saving.value = true
   editError.value = ''
   try {
-    const result = await api.fetchAnalysis(spec)
-    point.name = name
-    point.spec = spec
-    point.viz = coerceVisualization(viz, dimensionOf(spec))
-    point.resolvedName = result.name ?? ''
-    point.data = result.data
-    point.error = ''
+    const next = shape(payload)
+    const result = await answer(next)
+    Object.assign(point, next, result, { error: '' })
     persist()
     if (isPostHogConfigured) {
-      posthog.capture('analytics_data_point_edited', {
-        dimension: dimensionOf(spec),
-        visualization: point.viz,
-        collection: spec.collection,
-        metric: spec.metric?.operation,
-        joined: Boolean(spec.join),
-        filter_count: spec.filters?.length ?? 0,
-      })
+      posthog.capture('analytics_data_point_edited', traits(point))
     }
     editTarget.value = null
     toast.success('Data point updated!')
@@ -387,7 +459,9 @@ function confirmClear() {
       <p class="panel-note">
         A data point is one query. Ask for a single figure — a count, an average — and it is drawn
         as a data cell; break that figure down by a second field and it can be drawn as a bar
-        chart, a line graph or a pie chart.
+        chart, a line graph or a pie chart. Filters can be joined by AND or OR, and turning on
+        Compare runs the same query for several series — one semester against another, say — and
+        draws them as one bar chart.
       </p>
       <button class="btn" @click="openBuilder">
         <span class="material-symbols-outlined">add</span>
@@ -403,6 +477,7 @@ function confirmClear() {
         :index="index"
         :total="points.length"
         @update:viz="setViz(point, $event)"
+        @update:orientation="setOrientation(point, $event)"
         @rename="renamePoint(point, $event)"
         @edit="editPoint(point)"
         @move="nudge(index, $event)"

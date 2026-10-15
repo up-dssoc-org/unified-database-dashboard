@@ -14,8 +14,13 @@
 /** Alias the endpoint gives the document pulled in by a join. */
 export const JOIN_ALIAS = 'joined'
 
-/** Server-side caps, repeated so the form can stop short of them. */
+/**
+ * Server-side caps, repeated so the form can stop short of them. `MAX_FILTERS`
+ * bounds `filters` and each `any_of` branch alike; `MAX_BRANCHES` bounds how
+ * many branches `any_of` holds.
+ */
 export const MAX_FILTERS = 10
+export const MAX_BRANCHES = 10
 export const MIN_GROUPS = 1
 export const MAX_GROUPS = 100
 export const DEFAULT_GROUPS = 25
@@ -196,8 +201,12 @@ export function describeSpec(spec) {
   const parts = [`${metric} · ${collectionLabel(spec.collection)}`]
   if (spec.group_by) parts.push(`by ${fieldLabel(spec, spec.group_by)}`)
 
-  const filters = spec.filters?.length ?? 0
-  if (filters) parts.push(`${filters} filter${filters === 1 ? '' : 's'}`)
+  const branches = spec.any_of ?? []
+  const filters = (spec.filters?.length ?? 0) + branches.reduce((n, b) => n + b.length, 0)
+  if (filters) {
+    const grouping = branches.length > 1 ? ` in ${branches.length} OR groups` : ''
+    parts.push(`${filters} filter${filters === 1 ? '' : 's'}${grouping}`)
+  }
   if (spec.include_deleted) parts.push('deleted included')
 
   return parts.join(' · ')

@@ -8,18 +8,34 @@
  *
  * Which visualizations are on offer follows from the point's dimensionality,
  * not from this card — a 1-dimensional answer is a single figure and has only
- * the data cell to be drawn as.
+ * the data cell to be drawn as. A comparison is always a bar chart: its `data`
+ * is one answer per series. Every bar chart can be flipped between horizontal
+ * and vertical bars here.
  */
 import { computed, nextTick, ref } from 'vue'
-import BarChart from '@/components/charts/BarChart.vue'
+import SeriesBarChart from '@/components/charts/SeriesBarChart.vue'
 import DonutChart from '@/components/charts/DonutChart.vue'
 import LineChart from '@/components/charts/LineChart.vue'
 import { CHART_COLORS } from '@/components/charts/useChartSize'
 import { describeSpec, fieldLabel, metricLabel } from '@/api/analyticsSchema'
-import { dimensionOf, sortedForLine, toFigure, toRows, visualizationsFor } from './dataPoints'
+import {
+  ORIENTATIONS,
+  coerceOrientation,
+  dimensionOf,
+  isComparison,
+  sortedForLine,
+  toComparisonRows,
+  toFigure,
+  toRows,
+  visualizationsFor,
+} from './dataPoints'
 
 const props = defineProps({
-  /** A board entry: { id, name, spec, viz, loading, error, data, resolvedName }. */
+  /**
+   * A board entry: { id, name, spec, viz, orientation, series, loading, error,
+   * data, resolvedName }. `series` holds two or more `{ name, filters, any_of }`
+   * for a comparison, and is empty otherwise.
+   */
   point: { type: Object, required: true },
   /** Position on the board, and how many points share it — drives the ordering controls. */
   index: { type: Number, required: true },
@@ -28,6 +44,7 @@ const props = defineProps({
 
 const emit = defineEmits([
   'update:viz',
+  'update:orientation',
   'rename',
   'edit',
   'move',
@@ -38,8 +55,10 @@ const emit = defineEmits([
   'drop',
 ])
 
+const compared = computed(() => isComparison(props.point))
 const dimension = computed(() => dimensionOf(props.point.spec))
-const vizOptions = computed(() => visualizationsFor(dimension.value))
+const vizOptions = computed(() => visualizationsFor(dimension.value, compared.value))
+const orientation = computed(() => coerceOrientation(props.point.orientation))
 
 /** The name given on creation, else the one the API derived from the query. */
 const title = computed(() => props.point.name || props.point.resolvedName || 'Data point')
@@ -73,7 +92,10 @@ function cancelRename() {
   renaming.value = false
 }
 
-const description = computed(() => describeSpec(props.point.spec))
+const description = computed(() => {
+  const query = describeSpec(props.point.spec)
+  return compared.value ? `${query} · ${props.point.series.length} series compared` : query
+})
 
 /** What the figure in a data cell is counting or averaging. */
 const figureCaption = computed(() => {
@@ -86,27 +108,47 @@ const color = computed(() => CHART_COLORS[props.index % CHART_COLORS.length])
 
 const figure = computed(() => toFigure(props.point.data))
 
+/** `[{ label, value }]`, for the line graph and the pie chart. */
 const rows = computed(() => {
   const shaped = toRows(props.point.data)
   return props.point.viz === 'line' ? sortedForLine(shaped) : shaped
 })
 
-/** A 2-dimensional query that matched nothing has categories to draw, but none. */
-const empty = computed(() => dimension.value === '2d' && !rows.value.length)
+/**
+ * The bar chart's `[{ group, series, value }]`. Only compared breakdowns are
+ * clustered; a single query's categories, and compared figures, are one bar
+ * per category in the point's own colour.
+ */
+const bars = computed(() => {
+  if (compared.value) return toComparisonRows(props.point.spec, props.point.series, props.point.data)
+  return rows.value.map(({ label, value }) => ({ group: label, series: '', value }))
+})
+
+const clustered = computed(() => compared.value && dimension.value === '2d')
+const barSeries = computed(() => (clustered.value ? props.point.series.map((s) => s.name) : ['']))
+const barColors = computed(() => (clustered.value ? CHART_COLORS : [color.value]))
+
+/** A breakdown that matched nothing has categories to draw, but none. */
+const empty = computed(() =>
+  props.point.viz === 'bar' ? !bars.value.length : dimension.value === '2d' && !rows.value.length
+)
 
 const hasData = computed(() => props.point.data !== null && props.point.data !== undefined)
 
-/** Longest category label decides how much room the bar chart's gutter needs. */
+/** Longest category label decides how much room the horizontal gutter needs. */
 const labelWidth = computed(() => {
-  const longest = Math.max(0, ...rows.value.map((r) => r.label.length))
+  const longest = Math.max(0, ...bars.value.map((r) => r.group.length))
   return Math.min(190, Math.max(90, longest * 7))
 })
+
+/** A line is read left to right and a comparison carries a bar per series, so both span the board. */
+const wide = computed(() => props.point.viz === 'line' || compared.value)
 </script>
 
 <template>
   <section
     class="panel point"
-    :class="`span-${point.viz}`"
+    :class="{ wide }"
     @dragover.prevent
     @drop.prevent="emit('drop')"
   >
@@ -163,6 +205,28 @@ const labelWidth = computed(() => {
             <option v-for="v in vizOptions" :key="v.value" :value="v.value">{{ v.label }}</option>
           </select>
         </label>
+
+        <div
+          v-if="point.viz === 'bar'"
+          class="seg"
+          role="group"
+          :aria-label="`Bar direction for ${title}`"
+        >
+          <button
+            v-for="o in ORIENTATIONS"
+            :key="o.value"
+            type="button"
+            class="icon-btn"
+            :class="{ on: orientation === o.value }"
+            :aria-pressed="orientation === o.value"
+            :aria-label="`${o.label} bars`"
+            :title="`${o.label} bars`"
+            :disabled="point.loading"
+            @click="emit('update:orientation', o.value)"
+          >
+            <span class="material-symbols-outlined">{{ o.icon }}</span>
+          </button>
+        </div>
 
         <div class="order" role="group" :aria-label="`Order of ${title}`">
           <button
@@ -230,10 +294,12 @@ const labelWidth = computed(() => {
         <p class="cell-caption">{{ figureCaption }}</p>
       </div>
 
-      <BarChart
+      <SeriesBarChart
         v-else-if="point.viz === 'bar'"
-        :data="rows"
-        :color="color"
+        :data="bars"
+        :series="barSeries"
+        :colors="barColors"
+        :orientation="orientation"
         :label-width="labelWidth"
       />
 
@@ -251,8 +317,7 @@ const labelWidth = computed(() => {
   min-width: 0;
 }
 
-/* A line is read left to right, so it takes the full width of the board. */
-.span-line {
+.wide {
   grid-column: 1 / -1;
 }
 
@@ -343,6 +408,23 @@ const labelWidth = computed(() => {
   width: auto;
   padding: 0.25rem 0.4rem;
   font-size: 0.78rem;
+}
+
+/* The bar direction: two icon buttons, the current one filled in. */
+.seg {
+  display: flex;
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+}
+
+.seg .icon-btn {
+  border: 0;
+  border-radius: 0;
+}
+
+.seg .icon-btn.on {
+  background: var(--canvas);
+  color: var(--maroon);
 }
 
 .order {

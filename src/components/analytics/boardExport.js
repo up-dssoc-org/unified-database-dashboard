@@ -16,8 +16,9 @@
  *
  * The card content is read from the rendered cards, not from the board entries,
  * so this module relies on DataPointCard's class names: `.name-text`,
- * `.point-note`, `.state`, `.cell-figure`, `.cell-caption`, and the chart
- * markup inside `.chart` / `.donut`. Renaming one of those means updating it here.
+ * `.point-note`, `.state`, `.cell-figure`, `.cell-caption`, the chart markup
+ * inside `.chart` / `.donut`, and a comparison's `.series-legend`. Renaming one
+ * of those means updating it here.
  */
 
 const SVG_NS = 'http://www.w3.org/2000/svg'
@@ -68,6 +69,7 @@ const TYPE = {
   caption: { size: 13.12, weight: 400, line: 19.7, family: 'sans', fill: 'slate' },
   legend: { size: 13.6, weight: 400, line: 20.4, family: 'sans', fill: 'ink' },
   legendCount: { size: 12.48, weight: 400, line: 20.4, family: 'mono', fill: 'slate' },
+  seriesLegend: { size: 12.8, weight: 400, line: 19.2, family: 'sans', fill: 'ink' },
 }
 
 /**
@@ -276,7 +278,12 @@ function bodyBlocks(card, innerW, theme) {
   if (donut) return [donutBlock(donut, innerW, theme)]
 
   const chart = card.querySelector('.chart > svg')
-  if (chart) return [chartBlock(chart)]
+  if (chart) {
+    const legend = card.querySelector('.series-legend')
+    return legend
+      ? [chartBlock(chart), spacer(9.6), seriesLegendBlock(legend, innerW, theme)]
+      : [chartBlock(chart)]
+  }
 
   return []
 }
@@ -380,6 +387,63 @@ function donutBlock(donut, innerW, theme) {
           g.append(svgEl('rect', { x: lx, y: ly - 1, width: legendW, height: 1, fill: theme.rule }))
         }
       })
+    },
+  }
+}
+
+/**
+ * A comparison's legend: HTML on screen, so redrawn here as the same row of
+ * swatch-and-label items, wrapping onto a new line when the row runs out.
+ */
+function seriesLegendBlock(legend, innerW, theme) {
+  const swatch = 9
+  const swatchGap = 6.4
+  const itemGap = 16
+  const rowGap = 5.6
+  const type = TYPE.seriesLegend
+
+  const items = [...legend.querySelectorAll('li')].map((li) => {
+    const name = textIn(li, '.name')
+    const room = innerW - swatch - swatchGap
+    const label = fit(name, type, room, theme)
+    return {
+      color: getComputedStyle(li.querySelector('.swatch')).backgroundColor,
+      label,
+      width: swatch + swatchGap + measure(label, type, theme),
+    }
+  })
+
+  // Placed before drawing, so the block knows how many rows it needs.
+  const placed = []
+  let x = 0
+  let row = 0
+  for (const item of items) {
+    if (x > 0 && x + item.width > innerW) {
+      x = 0
+      row++
+    }
+    placed.push({ ...item, x, row })
+    x += item.width + itemGap
+  }
+
+  const rows = items.length ? row + 1 : 0
+  return {
+    height: rows * type.line + Math.max(0, rows - 1) * rowGap,
+    draw(g, left, top) {
+      for (const item of placed) {
+        const y = top + item.row * (type.line + rowGap)
+        g.append(
+          svgEl('rect', {
+            x: left + item.x,
+            y: y + type.line / 2 - swatch / 2,
+            width: swatch,
+            height: swatch,
+            rx: 1,
+            fill: item.color,
+          })
+        )
+        drawLines(g, [item.label], type, theme, left + item.x + swatch + swatchGap, y)
+      }
     },
   }
 }
