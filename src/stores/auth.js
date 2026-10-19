@@ -12,12 +12,16 @@ function claims(token) {
   return JSON.parse(atob(payload.replace(/-/g, '+').replace(/_/g, '/')))
 }
 
-function refreshExpiry(res, fallback = null) {
+function claimsOrNull(token) {
   try {
-    return claims(res.refresh_token).exp ?? fallback
+    return claims(token)
   } catch {
-    return fallback
+    return null
   }
+}
+
+function refreshExpiry(res) {
+  return claimsOrNull(res.refresh_token)?.exp ?? claimsOrNull(res.access_token)?.refresh_exp ?? null
 }
 
 // Login and refresh return the same payload shape, so the session is built in
@@ -31,23 +35,26 @@ function sessionFrom(res) {
     member: res.user?.member ?? null,
     hasMemberId: res.user?.has_member_id ?? false,
     permissions: payload.permissions ?? [],
-    exp: payload.exp,
-    refreshExp: refreshExpiry(res, payload?.refresh_exp ?? null)
+    exp: payload.exp
   }
 }
 
 const SESSION_KEY = 'dssoc.session'
 const SESSION_REFRESH = 'dssoc.refresh'
+const SESSION_REFRESH_EXP = 'dssoc.refresh.exp'
 
-// JWT exp is seconds since the epoch; every clock here is milliseconds.
+// JWT exp is seconds since the epoch; every clock here is milliseconds. Storage
+// hands the value back as a string, so coerce first — a missing expiry lands on
+// NaN or 0 and reads as stale either way.
 const isFresh = (exp, now) => {
-  return exp * 1000 > now
+  return Number(exp) * 1000 > now
 }
 
 export const useAuthStore = defineStore('auth', {
   state: () => ({
     session: useSessionStorage(SESSION_KEY, null, { serializer: StorageSerializers.object }),
     refreshToken: useLocalStorage(SESSION_REFRESH, null),
+    refreshExp: useLocalStorage(SESSION_REFRESH_EXP, null),
     // NOTE: One second is granular enough to
     // drop the shell when the session lapses in an idle tab.
     currentTime: useTimestamp({ scheduler: (cb) => useIntervalFn(cb, 1000) }),
@@ -57,7 +64,7 @@ export const useAuthStore = defineStore('auth', {
   getters: {
     isAuthenticated: (state) =>
       isFresh(state.session?.exp, state.currentTime) ||
-      (!!state.refreshToken && isFresh(state.session?.refreshExp, state.currentTime)),
+      (!!state.refreshToken && isFresh(state.refreshExp, state.currentTime)),
 
     isLinkedMember: (state) => !!state.session?.hasMemberId,
 
@@ -83,30 +90,35 @@ export const useAuthStore = defineStore('auth', {
     // Actions rather than getters: a navigation decision must not read a value
     // cached before the token expired, so these sample the clock on every call.
     isAccessFresh() {
-      return isFresh(this.session?.exp, this.currentTime) // NOTE: is date.now() really the most efficient way
+      return isFresh(this.session?.exp, this.currentTime)
     },
 
     isRefreshTokenFresh() {
-      return !!this.refreshToken && isFresh(this.session?.refreshExp, this.currentTime)
+      return !!this.refreshToken && isFresh(this.refreshExp, this.currentTime)
     },
 
     async login(username, password) {
       const res = await api.authenticate(username, password)
       this.session = sessionFrom(res)
-      this.refreshToken = res.refresh_token ?? null
+      this.refreshToken = null
+      this.refreshExp = null
+      this.rememberRefresh(res)
       this.identifyCurrentUser()
     },
 
-    // Returns the new access token: the client's 401 retry reads a falsy result
-    // as "refresh failed" and abandons the request.
+    rememberRefresh(res) {
+      if (!res?.refresh_token) return
+      this.refreshToken = res.refresh_token
+      this.refreshExp = refreshExpiry(res)
+    },
+
     async refreshSession() {
       if (!this.refreshToken) return null
       try {
         const res = await api.refresh(this.refreshToken)
         if (!res?.access_token) return null
         this.session = sessionFrom(res)
-        // /refresh rotates the pair, but keep the old one if none came back.
-        this.refreshToken = res.refresh_token ?? this.refreshToken
+        this.rememberRefresh(res)
         this.identifyCurrentUser()
         return this.session.token
       } catch {
@@ -142,6 +154,7 @@ export const useAuthStore = defineStore('auth', {
     clear() {
       this.session = null
       this.refreshToken = null
+      this.refreshExp = null
     }
   }
 })

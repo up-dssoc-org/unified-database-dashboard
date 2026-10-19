@@ -71,11 +71,12 @@ export const router = createRouter({ history: createWebHistory(), routes })
 router.beforeEach(async (to) => {
   const authStore = useAuthStore()
 
+  if (!authStore.isAccessFresh() && authStore.isRefreshTokenFresh()) {
+    await authStore.refreshSession()
+  }
+
   if (to.meta.requiresAuth && !authStore.isAccessFresh()) {
-    const refreshed = authStore.isRefreshTokenFresh() ? await authStore.refreshSession() : null
-    if (!refreshed) {
-      return { name: 'login', query: to.fullPath === '/summary' ? {} : { next: to.fullPath } }
-    }
+    return { name: 'login', query: to.fullPath === '/summary' ? {} : { next: to.fullPath } }
   }
 
   if (to.meta.requiresMember && !authStore.isLinkedMember) {
