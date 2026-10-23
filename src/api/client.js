@@ -34,7 +34,7 @@ function defaultMessage(status) {
 
 const instance = axios.create({ 
   baseURL: BASE, 
-  timeout: 5000, 
+  timeout: 10000, // 10 second timeout for cold start concerns
   headers: { 
     Accept: 'application/json', 
     ...(BYPASS && {'x-vercel-protection-bypass': BYPASS}) 
@@ -79,13 +79,6 @@ instance.interceptors.response.use(
   async (error) => {
     const config = error.config ?? {}
     const res = error.response
-
-    // if (!config.skipAuth) {
-    //     config._generation = generation
-    //     const token = getToken()
-    //     if (token) config.headers.set('Authorization', `Bearer ${token}`)
-    //   }
-    //   return config
 
     if (res?.status === 401 && !config.skipAuth) {
       config._attempts = (config._attempts ?? 0) + 1
@@ -199,6 +192,7 @@ export const api = {
   fetchAnalysis: (query) => request('/analytics', { method: 'POST', body: query, timeout: 30000 }),
 
   getMembers: ({ year, sem, page = 1 }) => request('/members', { params: { year, sem, page } }),
+  addMember: (member) => request('/members', { method: 'POST', body: dropNull(member) }),
   getSingleMemberHistory: ({ dssoc_id }) => request(`/members/history/${dssoc_id}`),
   editMember: (dssoc_id, member) => request(`/members/${dssoc_id}`, { method: 'PATCH', body: member }),
   deleteMember: (dssoc_id) => request(`/members/${dssoc_id}`, { method: "DELETE" }),
@@ -231,12 +225,15 @@ export const api = {
     { method: 'DELETE' }
   ),
 
+  getUser: (user_id) => request('/user', { params: { user_id }}),
+  updateUser: (user_id, { username = null, role_ids = null }) => request(`/user/${user_id}`, { method: 'PATCH', body: { username, role_ids }}),
   addUser: (username, password) => request('/user/create', { method: 'POST', body: { username, password }}),
   getUsers: ({ page = 1 }) => request('/admin/users', { params: { page }}),
   deleteUser: (user_id) => request(`/user/${user_id}`, { method: 'DELETE' }),
   restoreUser: (user_id) => request(`/admin/restore/user/${user_id}`, { method: 'PATCH' }),
 
-  getUserRoles: ({ page = 1 }) => request('/admin/user-roles', { params: { page }}),
+  getUserRoles: ({ page = 1 }) => request('user-roles', { params: { page }}),
+  getAllUserRoles: ({ page = 1 }) => request('/admin/user-roles', { params: { page }}),
   addUserRole: ({ role_name, description, permissions}) => request('/user-roles', { method: 'POST', body: { role_name, description, permissions }}),
   updateUserRole: (user_role_id, { role_name = null, description = null, permissions = null }) =>
     request('/user-roles', {

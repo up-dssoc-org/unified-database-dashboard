@@ -15,6 +15,12 @@
  * the caller takes the value and closes the picker by dropping the `v-if`.
  * The row whose key matches `selectedKey` is marked as the current choice.
  *
+ * With `multiple`, the picker chooses a set instead: the rows whose keys are in
+ * `selectedKeys` are marked, their buttons stay live, and pressing one emits
+ * `deselect` with the row. The caller adds and removes from its own list and
+ * the dialog stays open, so a footer Done button closes it — nothing is
+ * committed here either way, the caller still owns the value.
+ *
  * `columns` and `rowKey` take the same shape as DataTable's, and any
  * `cell:<key>` slot is passed through to it for custom cells.
  *
@@ -39,6 +45,10 @@ const props = defineProps({
   rowKey: { type: [String, Function], default: '_id' },
   /** Key of the option currently chosen, if any — that row is marked. */
   selectedKey: { type: [String, Number], default: null },
+  /** Chooses a set rather than one option — see the block comment above. */
+  multiple: { type: Boolean, default: false },
+  /** Multi-select only: keys of every option currently chosen. */
+  selectedKeys: { type: Array, default: () => [] },
   page: { type: Number, default: 1 },
   totalPages: { type: Number, default: 1 },
   /** Total matching options across all pages; shown above the table when set. */
@@ -50,11 +60,15 @@ const props = defineProps({
   emptyText: { type: String, default: 'No options to choose from.' },
   selectLabel: { type: String, default: 'Select' },
   selectedLabel: { type: String, default: 'Selected' },
+  /** Multi-select only: verb for taking a chosen option back out. */
+  deselectLabel: { type: String, default: 'Remove' },
+  /** Multi-select only: closes the picker, since choosing no longer does. */
+  doneLabel: { type: String, default: 'Done' },
   /** Names an option in the Select button's accessible label. */
   optionLabel: { type: Function, default: null },
 })
 
-const emit = defineEmits(['close', 'select', 'update:page'])
+const emit = defineEmits(['close', 'select', 'deselect', 'update:page'])
 
 const slots = useSlots()
 const uid = useId()
@@ -68,12 +82,18 @@ function keyOf(row, index) {
   return readPath(row, props.rowKey)
 }
 
-const isSelected = (row, index) =>
-  props.selectedKey !== null && keyOf(row, index) === props.selectedKey
+// One set covers both modes, so the row markup does not have to care which it
+// is in: single-select is just the set of the one chosen key.
+const chosen = computed(() => {
+  if (props.multiple) return new Set(props.selectedKeys)
+  return new Set(props.selectedKey === null ? [] : [props.selectedKey])
+})
 
-function selectAria(row) {
+const isSelected = (row, index) => chosen.value.has(keyOf(row, index))
+
+function actionAria(row, verb) {
   const name = props.optionLabel?.(row)
-  return name ? `${props.selectLabel} ${name}` : undefined
+  return name ? `${verb} ${name}` : undefined
 }
 
 function close() {
@@ -137,8 +157,14 @@ onUnmounted(() => {
           <p v-else-if="loading" class="muted status">Loading…</p>
 
           <template v-else>
-            <p v-if="total !== null" class="count">
-              <span class="figure">{{ total }}</span> {{ total === 1 ? 'option' : 'options' }}
+            <p v-if="total !== null || multiple" class="count">
+              <template v-if="total !== null">
+                <span class="figure">{{ total }}</span> {{ total === 1 ? 'option' : 'options' }}
+              </template>
+              <template v-if="multiple">
+                <span v-if="total !== null" aria-hidden="true"> · </span>
+                <span class="figure">{{ selectedKeys.length }}</span> selected
+              </template>
             </p>
 
             <DataTable
@@ -153,9 +179,21 @@ onUnmounted(() => {
                 <slot :name="name" v-bind="scope" />
               </template>
 
+              <!-- A chosen row is a dead end in single-select — picking
+                   another one replaces it — but the way back out in
+                   multi-select, so there its button stays live. -->
               <template #actions="{ row, index }">
                 <button
-                  v-if="isSelected(row, index)"
+                  v-if="isSelected(row, index) && multiple"
+                  class="pick-btn chosen"
+                  :aria-label="actionAria(row, deselectLabel)"
+                  @click="emit('deselect', row)"
+                >
+                  <span class="material-symbols-outlined">check</span>
+                  {{ selectedLabel }}
+                </button>
+                <button
+                  v-else-if="isSelected(row, index)"
                   class="pick-btn chosen"
                   disabled
                   :aria-label="optionLabel ? `${optionLabel(row)} (${selectedLabel})` : undefined"
@@ -166,7 +204,7 @@ onUnmounted(() => {
                 <button
                   v-else
                   class="pick-btn"
-                  :aria-label="selectAria(row)"
+                  :aria-label="actionAria(row, selectLabel)"
                   @click="emit('select', row)"
                 >
                   {{ selectLabel }}
@@ -181,6 +219,13 @@ onUnmounted(() => {
             />
           </template>
 
+        </div>
+
+        <!-- Single-select closes itself on the pick; a set is only finished
+             when the user says so. Kept outside the body so it is reachable
+             while the list is loading or has failed. -->
+        <div v-if="multiple" class="modal-footer">
+          <button type="button" class="btn" @click="close">{{ doneLabel }}</button>
         </div>
 
       </div>
@@ -325,7 +370,30 @@ onUnmounted(() => {
   cursor: default;
 }
 
+/* Multi-select only: the chosen button is the control that drops the option,
+   so it keeps a pointer and lightens on hover. */
+.pick-btn.chosen:not(:disabled) {
+  cursor: pointer;
+}
+
+.pick-btn.chosen:not(:disabled):hover {
+  background: transparent;
+  color: var(--maroon);
+}
+
 .pick-btn .material-symbols-outlined {
   font-size: 1rem;
+}
+
+/* Footer — multi-select's Done button, at the lower right. */
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.6rem;
+  padding: 1rem 1.5rem;
+  border-top: 1px solid var(--rule);
+  background: var(--surface);
+  position: sticky;
+  bottom: 0;
 }
 </style>

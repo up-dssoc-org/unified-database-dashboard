@@ -5,8 +5,9 @@ import { useAuthStore } from '@/stores/auth'
 import DataTable from '@/components/table/DataTable.vue'
 import TablePager from '@/components/table/TablePager.vue'
 import SingleReaffiliation from '@/components/reaffiliation/SingleReaffiliation.vue'
-import AddEditModal from '@/components/generic/AddEditModal.vue'
+import AddEditMemberModal from '@/components/member/AddEditMemberModal.vue'
 import DeleteModal from '@/components/generic/DeleteModal.vue'
+import { toast } from '@/components/generic/useToast'
 import posthog from 'posthog-js'
 
 const isPostHogConfigured = inject('isPostHogConfigured')
@@ -21,10 +22,19 @@ const error = ref('')
 const search = ref('')
 
 const canRead = computed(() => auth.can('read:all', 'read:member'))
+const canCreate = computed(() => auth.can('create:all', 'create:member'))
 const canEdit = computed(() => auth.can('update:all', 'update:member'))
 const canDelete = computed(() => auth.can('delete:all', 'delete:member'))
 const hasAnyAction = computed(() => canRead.value || canEdit.value || canDelete.value)
 const viewRecord = ref(null)
+
+// Add-member modal, plus the state AddEditMemberModal renders while the create
+// runs. The ref is held so a create with "add another" ticked can reset the
+// form in place instead of closing it.
+const adding = ref(false)
+const addModal = ref(null)
+const creating = ref(false)
+const createError = ref('')
 
 const editTarget = ref(null)
 const saving = ref(false)
@@ -83,6 +93,43 @@ async function load() {
 
 function viewMember(member) {
   viewRecord.value = { dssoc_id: member._id, member }
+}
+
+function addMember() {
+  createError.value = ''
+  adding.value = true
+}
+
+function cancelAdd() {
+  adding.value = false
+  createError.value = ''
+}
+
+async function createMember(values, { addAnother }) {
+  creating.value = true
+  createError.value = ''
+  try {
+    await api.addMember(values)
+    if (isPostHogConfigured) {
+      posthog.capture('member_created', {
+        semester: values._id.slice(0, 5),
+        add_another: addAnother,
+      })
+    }
+    toast.success(`${values._id} added!`)
+    // The new member only shows on this page when their ID's semester is the
+    // one being viewed, so the reload is a no-op from the editor's side when
+    // they typed a different one — the toast is what confirms the write.
+    if (addAnother) addModal.value?.resetForNext(values._id)
+    else adding.value = false
+    await load()
+  } catch (e) {
+    // Kept in the modal so the typed values survive and can be retried.
+    toast.error('Failed to add member')
+    createError.value = e?.detail || 'Failed to add member.'
+  } finally {
+    creating.value = false
+  }
 }
 
 function editMember(member) {
@@ -154,52 +201,6 @@ const columns = [
   { key: 'up_mail', label: 'UP Mail' },
 ]
 
-// NOTE: `social_media` and `user_id` are to be incorporated as separate
-// features
-const memberFields = [
-  {
-    key: 'student_number',
-    label: 'Student number',
-    type: 'string',
-    placeholder: '2020-12345',
-  },
-  { key: 'last_name', label: 'Last name', type: 'string', required: true },
-  { key: 'first_name', label: 'First name', type: 'string', required: true },
-  {
-    key: 'middle_name',
-    label: 'Middle name',
-    type: 'string',
-    hint: 'Middle name or initial. Optional.',
-  },
-  { key: 'suffix', label: 'Suffix', type: 'string', placeholder: 'Jr.' },
-  { key: 'pronouns', label: 'Pronouns', type: 'string', placeholder: 'they/them' },
-  {
-    key: 'birthday',
-    label: 'Birthday',
-    type: 'string',
-    placeholder: '01/01/2000',
-    hint: 'MM/DD/YYYY.',
-  },
-  {
-    key: 'contact_number',
-    label: 'Contact number',
-    type: 'string',
-    placeholder: '0917 123 4567',
-  },
-  {
-    key: 'personal_email',
-    label: 'Personal email',
-    type: 'string',
-    placeholder: 'member@example.com',
-  },
-  {
-    key: 'up_mail',
-    label: 'UP mail',
-    type: 'string',
-    placeholder: 'member@up.edu.ph',
-  },
-]
-
 const rowActions = computed(() => [
   {
     key: 'view',
@@ -267,6 +268,10 @@ const lastOnPage = computed(() =>
         <label for="q">Find on this page</label>
         <input id="q" v-model="search" type="search" placeholder="Name, DSSOC ID, student number, email" />
       </div>
+      <button v-if="canCreate" class="btn" @click="addMember">
+        <span class="material-symbols-outlined">add</span>
+        Add member
+      </button>
     </div>
   </header>
 
@@ -302,12 +307,19 @@ const lastOnPage = computed(() =>
     @close="viewRecord = null"
   />
 
-  <AddEditModal
+  <AddEditMemberModal
+    v-if="adding"
+    ref="addModal"
+    :default-year="selected?.slice(0, 4)"
+    :default-semester="selected?.slice(4)"
+    :busy="creating"
+    :error="createError"
+    @close="cancelAdd"
+    @submit="createMember"
+  />
+
+  <AddEditMemberModal
     v-if="editTarget"
-    title="Edit member"
-    :description="`Updating ${fullName(editTarget)} (${editTarget._id}).`"
-    submit-label="Save member"
-    :fields="memberFields"
     :values="editTarget"
     :busy="saving"
     :error="editError"

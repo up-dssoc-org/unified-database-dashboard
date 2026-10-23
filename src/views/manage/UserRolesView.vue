@@ -60,7 +60,7 @@ async function load() {
   loading.value = true
   error.value = ''
   try {
-    result.value = await api.getUserRoles({ page: page.value })
+    result.value = await api.getAllUserRoles({ page: page.value })
   } catch (e) {
     result.value = null
     error.value = e.detail
