@@ -4,10 +4,13 @@ import { api, latestSemester, semesterCode } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
 import DataTable from '@/components/table/DataTable.vue'
 import TablePager from '@/components/table/TablePager.vue'
+import RowActionMenu from '@/components/table/RowActionMenu.vue'
 import SingleReaffiliation from '@/components/reaffiliation/SingleReaffiliation.vue'
 import AddEditMemberModal from '@/components/member/AddEditMemberModal.vue'
+import MergeMembersModal from '@/components/member/MergeMembersModal.vue'
 import DeleteModal from '@/components/generic/DeleteModal.vue'
 import { toast } from '@/components/generic/useToast'
+import { useDebounced } from '@/components/generic/useDebounced'
 import posthog from 'posthog-js'
 
 const isPostHogConfigured = inject('isPostHogConfigured')
@@ -19,12 +22,17 @@ const page = ref(1)
 const result = ref(null)
 const loading = ref(true)
 const error = ref('')
+// The box edits `search`; the list follows `query`, which only catches up once
+// typing has paused for a second.
 const search = ref('')
+const query = useDebounced(() => search.value.trim())
 
 const canRead = computed(() => auth.can('read:all', 'read:member'))
 const canCreate = computed(() => auth.can('create:all', 'create:member'))
 const canEdit = computed(() => auth.can('update:all', 'update:member'))
 const canDelete = computed(() => auth.can('delete:all', 'delete:member'))
+// A merge rewrites one member and deletes the other, so it takes both.
+const canMerge = computed(() => canEdit.value && canDelete.value)
 const hasAnyAction = computed(() => canRead.value || canEdit.value || canDelete.value)
 const viewRecord = ref(null)
 
@@ -46,6 +54,12 @@ const deleteTarget = ref(null)
 const deleting = ref(false)
 const deleteError = ref('')
 
+// The member the merge dialog was opened from (it starts as the one kept),
+// plus the state MergeMembersModal renders while the merge runs.
+const mergeTarget = ref(null)
+const merging = ref(false)
+const mergeError = ref('')
+
 onMounted(async () => {
   try {
     const meta = await api.semesters()
@@ -59,14 +73,22 @@ onMounted(async () => {
   }
 })
 
-watch(selected, () => {
-  page.value = 1
-  load()
-})
+// A new semester or search starts over from page 1; when the list is already
+// there, the page watcher will not fire, so the load is called directly.
+function reload() {
+  if (page.value === 1) load()
+  else page.value = 1
+}
+
+watch([selected, query], reload)
 watch(page, load)
 
+// Searching quickly can leave an older request still in flight; only the
+// latest one is allowed to land.
+let loadRequest = 0
+
 // NOTE: a special /admin/members endpoint should be constructed
-// wherein data fetched is based on the query WITHOUT including 
+// wherein data fetched is based on the query WITHOUT including
 // is_deleted = False
 async function load() {
   if (!selected.value) return
@@ -75,19 +97,23 @@ async function load() {
     error.value = 'Your account needs read:member or read:all to see this list.'
     return
   }
+  const ticket = ++loadRequest
   loading.value = true
   error.value = ''
   try {
-    result.value = await api.getMembers({
+    const res = await api.getMembers({
       year: selected.value.slice(0, 4),
       sem: selected.value.slice(4),
+      search: query.value || null,
       page: page.value,
     })
+    if (ticket === loadRequest) result.value = res
   } catch (e) {
+    if (ticket !== loadRequest) return
     result.value = null
     error.value = e.detail
   } finally {
-    loading.value = false
+    if (ticket === loadRequest) loading.value = false
   }
 }
 
@@ -188,6 +214,38 @@ async function confirmDelete() {
   }
 }
 
+function openMerge(member) {
+  mergeError.value = ''
+  mergeTarget.value = member
+}
+
+function cancelMerge() {
+  mergeTarget.value = null
+  mergeError.value = ''
+}
+
+async function submitMerge(body) {
+  merging.value = true
+  mergeError.value = ''
+  try {
+    const res = await api.mergeMembers(body)
+    if (isPostHogConfigured) {
+      posthog.capture('members_merged', { fields_merged: Object.keys(body.merge).length })
+    }
+    toast.success(res?.message || `Merged ${body.nonsurviving_id} into ${body.surviving_id}.`, {
+      title: 'Members merged',
+    })
+    mergeTarget.value = null
+    await load()
+  } catch (e) {
+    // Kept in the confirmation so the chosen pair survives and can be retried.
+    mergeError.value = e?.detail || 'Failed to merge members.'
+    toast.error(mergeError.value, { title: 'Merge failed' })
+  } finally {
+    merging.value = false
+  }
+}
+
 const fullName = (m) =>
   [m?.first_name, m?.middle_name, m?.last_name, m?.suffix].filter(Boolean).join(' ') || m?._id
 
@@ -201,13 +259,12 @@ const columns = [
   { key: 'up_mail', label: 'UP Mail' },
 ]
 
-const rowActions = computed(() => [
+const menuItems = computed(() => [
   {
     key: 'view',
     label: 'View',
     icon: 'visibility',
     show: canRead.value,
-    ariaLabel: (m) => `View ${fullName(m)}`,
     onClick: viewMember,
   },
   {
@@ -215,8 +272,14 @@ const rowActions = computed(() => [
     label: 'Edit',
     icon: 'edit',
     show: canEdit.value,
-    ariaLabel: (m) => `Edit ${fullName(m)}`,
     onClick: editMember,
+  },
+  {
+    key: 'merge',
+    label: 'Merge',
+    icon: 'merge',
+    show: canMerge.value,
+    onClick: openMerge,
   },
   {
     key: 'delete',
@@ -224,21 +287,11 @@ const rowActions = computed(() => [
     icon: 'delete',
     danger: true,
     show: canDelete.value,
-    ariaLabel: (m) => `Delete ${fullName(m)}`,
     onClick: askDeleteMember,
   },
 ])
 
-// Filters the loaded page. Server-side search is not exposed yet.
-const rows = computed(() => {
-  const list = result.value?.data ?? []
-  const q = search.value.trim().toLowerCase()
-  if (!q) return list
-  return list.filter((m) =>
-    [m._id, m.student_number, m.last_name, m.first_name, m.middle_name, m.personal_email, m.up_mail]
-      .some((v) => String(v ?? '').toLowerCase().includes(q))
-  )
-})
+const rows = computed(() => result.value?.data ?? [])
 
 const firstOnPage = computed(() =>
   result.value?.total ? (result.value.page - 1) * result.value.page_size + 1 : 0
@@ -265,8 +318,8 @@ const lastOnPage = computed(() =>
         </select>
       </div>
       <div class="search">
-        <label for="q">Find on this page</label>
-        <input id="q" v-model="search" type="search" placeholder="Name, DSSOC ID, student number, email" />
+        <label for="q">Search</label>
+        <input id="q" v-model="search" type="search" placeholder="Name or student number" />
       </div>
       <button v-if="canCreate" class="btn" @click="addMember">
         <span class="material-symbols-outlined">add</span>
@@ -280,7 +333,9 @@ const lastOnPage = computed(() =>
 
   <template v-else-if="result">
     <p class="count">
-      <span class="figure">{{ result.total }}</span> members in {{ selected }}<span v-if="result.total">
+      <span class="figure">{{ result.total }}</span> members in {{ selected }}<span v-if="query">
+        match “{{ query }}”</span
+      ><span v-if="result.total">
         · showing {{ firstOnPage }}–{{ lastOnPage }}</span
       >
     </p>
@@ -289,14 +344,22 @@ const lastOnPage = computed(() =>
       :columns="columns"
       :rows="rows"
       row-key="_id"
-      :actions="rowActions"
       :show-actions="hasAnyAction"
+      compact-actions
       :empty-text="
-        search
-          ? 'No one on this page matches that search. Try another page or clear the search.'
+        query
+          ? 'No member this semester matches that search. Try another name or student number.'
           : 'No members recorded for this semester yet.'
       "
-    />
+    >
+      <template #actions="{ row }">
+        <RowActionMenu
+          :items="menuItems"
+          :row="row"
+          :aria-label="`Actions for ${fullName(row)}`"
+        />
+      </template>
+    </DataTable>
 
     <TablePager v-model:page="page" :total-pages="result.total_pages" />
   </template>
@@ -325,6 +388,16 @@ const lastOnPage = computed(() =>
     :error="editError"
     @close="cancelEdit"
     @submit="saveMember"
+  />
+
+  <MergeMembersModal
+    v-if="mergeTarget"
+    :member="mergeTarget"
+    :semesters="semesters"
+    :busy="merging"
+    :error="mergeError"
+    @close="cancelMerge"
+    @submit="submitMerge"
   />
 
   <DeleteModal

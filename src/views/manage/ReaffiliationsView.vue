@@ -10,6 +10,16 @@ import AddEditModal from '@/components/generic/AddEditModal.vue'
 import DeleteModal from '@/components/generic/DeleteModal.vue'
 import OptionPickerModal from '@/components/generic/OptionPickerModal.vue'
 import SingleReaffiliationHistory from '@/components/reaffiliation/SingleReaffiliationHistory.vue'
+import ReaffiliationFilters from '@/components/reaffiliation/ReaffiliationFilters.vue'
+import {
+  CLASSIFICATIONS,
+  DESIGNATIONS,
+  YEAR_LEVELS,
+  emptyReaffFilters,
+  hasReaffFilters,
+  reaffFilterParams,
+} from '@/components/reaffiliation/reaffFilters'
+import { useDebounced } from '@/components/generic/useDebounced'
 import posthog from 'posthog-js'
 
 const isPostHogConfigured = inject('isPostHogConfigured', false)
@@ -19,7 +29,11 @@ const page = ref(1)
 const result = ref(null)
 const loading = ref(true)
 const error = ref('')
-const search = ref('')
+// The dropdowns edit `filters`; the list follows `appliedFilters`, which only
+// catches up once they have been left alone for a second.
+const filters = ref(emptyReaffFilters())
+const appliedFilters = useDebounced(filters)
+const filtered = computed(() => hasReaffFilters(appliedFilters.value))
 // The admin list is the only one that returns soft-deleted records, so the
 // page can be narrowed to just the active or just the deleted ones.
 const status = ref('all')
@@ -40,6 +54,11 @@ const degreesLoading = ref(false)
 const degreesError = ref('')
 // '' lists every campus's degrees; a campus ID narrows to that campus.
 const degreeCampus = ref('')
+const degreeSearch = ref('')
+const degreeQuery = useDebounced(() => degreeSearch.value.trim())
+// The search the shown page was fetched with, so a settled query that a
+// campus or page change has already fetched does not fetch again.
+const degreeSearchLoaded = ref('')
 
 // Campuses back the picker's campus filter. Loaded on first open and kept
 // after, so reopening the picker does not refetch.
@@ -77,8 +96,18 @@ const hasAnyAction = computed(
 
 onMounted(load)
 watch(page, load)
+// New filters start over from page 1; when the list is already there, the
+// page watcher will not fire, so the load is called directly.
+watch(appliedFilters, () => {
+  if (page.value === 1) load()
+  else page.value = 1
+})
 
 // TODO: implement delete committee endpoint
+
+// Changing filters quickly can leave an older request still in flight; only
+// the latest one is allowed to land.
+let loadRequest = 0
 
 async function load() {
   if (!canRead.value) {
@@ -86,20 +115,24 @@ async function load() {
     error.value = 'Your account needs read:all to see reaffiliations.'
     return
   }
+  const ticket = ++loadRequest
   loading.value = true
   error.value = ''
   try {
     // The linked data carries `degree_data`, which the table and the edit
     // modal use to name the degree instead of showing its ID.
-    result.value = await api.getAllReaffiliations({
+    const res = await api.getAllReaffiliations({
+      ...reaffFilterParams(appliedFilters.value),
       page: page.value,
       include_member_data: true,
     })
+    if (ticket === loadRequest) result.value = res
   } catch (e) {
+    if (ticket !== loadRequest) return
     result.value = null
     error.value = e.detail
   } finally {
-    loading.value = false
+    if (ticket === loadRequest) loading.value = false
   }
 }
 
@@ -151,18 +184,20 @@ async function loadCampuses() {
   }
 }
 
-// Switching campus or page quickly can leave an older request still in
-// flight; only the latest one is allowed to land.
+// Switching campus, search or page quickly can leave an older request still
+// in flight; only the latest one is allowed to land.
 let degreesRequest = 0
 
 async function loadDegrees() {
   const ticket = ++degreesRequest
   degreesLoading.value = true
   degreesError.value = ''
+  degreeSearchLoaded.value = degreeSearch.value.trim()
+  const params = { page: degreePage.value, search: degreeSearchLoaded.value || null }
   try {
     const res = degreeCampus.value
-      ? await api.getCampusDegreePrograms(degreeCampus.value, degreePage.value)
-      : await api.getDegrees({ page: degreePage.value })
+      ? await api.getCampusDegreePrograms(degreeCampus.value, params)
+      : await api.getDegrees(params)
     if (ticket === degreesRequest) degreeResult.value = res
   } catch (e) {
     if (ticket !== degreesRequest) return
@@ -175,6 +210,7 @@ async function loadDegrees() {
 
 function openDegreePicker() {
   degreeCampus.value = ''
+  degreeSearch.value = ''
   degreePage.value = 1
   pickingDegree.value = true
   loadCampuses()
@@ -185,6 +221,12 @@ function changeDegreeCampus() {
   degreePage.value = 1
   loadDegrees()
 }
+
+// Only while the picker is open: the box is cleared on the way in, and that
+// reset settles after the opening fetch has already used it.
+watch(degreeQuery, (query) => {
+  if (pickingDegree.value && query !== degreeSearchLoaded.value) changeDegreeCampus()
+})
 
 function changeDegreePage(next) {
   degreePage.value = next
@@ -282,28 +324,28 @@ const reaffFields = [
     key: 'degree_id',
     label: 'Degree program',
     type: 'number',
-    hint: 'Opens the full list of degree programs, which can be narrowed to one campus.',
+    hint: 'Opens the full list of degree programs, which can be searched or narrowed to one campus.',
   },
   {
     key: 'year_level',
     label: 'Year level',
     type: 'select',
     placeholder: 'Leave unchanged',
-    options: ['I', 'II', 'III', 'IV', 'V'],
+    options: YEAR_LEVELS,
   },
   {
     key: 'designation',
     label: 'Designation',
     type: 'select',
     placeholder: 'Leave unchanged',
-    options: ['Associate', 'Fellow'],
+    options: DESIGNATIONS,
   },
   {
     key: 'classification',
     label: 'Classification',
     type: 'select',
     placeholder: 'Leave unchanged',
-    options: ['Undergraduate', 'Graduate', 'Alumni', 'Researcher', 'Staff'],
+    options: CLASSIFICATIONS,
   },
 ]
 
@@ -375,25 +417,15 @@ const menuItems = computed(() => [
 // onto an empty list.
 const hasMenuItems = (row) => menuItems.value.some((item) => item.show(row))
 
-// Filters the loaded page. Server-side search is not exposed yet.
-const rows = computed(() => {
-  const list = result.value?.data ?? []
-  const q = search.value.trim().toLowerCase()
-  return list.filter((r) => {
+// The field filters run server-side; status has no API filter yet, so it
+// narrows the loaded page.
+const rows = computed(() =>
+  (result.value?.data ?? []).filter((r) => {
     if (status.value === 'active' && r.is_deleted) return false
     if (status.value === 'deleted' && !r.is_deleted) return false
-    if (!q) return true
-    return [
-      r.dssoc_id,
-      semesterOf(r),
-      degreeLabel(r.degree),
-      r.year_level,
-      r.designation,
-      r.classification,
-      r.remarks,
-    ].some((v) => String(v ?? '').toLowerCase().includes(q))
+    return true
   })
-})
+)
 
 const firstOnPage = computed(() =>
   result.value?.total ? (result.value.page - 1) * result.value.page_size + 1 : 0
@@ -420,24 +452,19 @@ const lastOnPage = computed(() =>
           <option value="deleted">Deleted</option>
         </select>
       </div>
-      <div class="search">
-        <label for="q">Find on this page</label>
-        <input
-          id="q"
-          v-model="search"
-          type="search"
-          placeholder="DSSOC ID, semester, degree, designation"
-        />
-      </div>
     </div>
   </header>
+
+  <ReaffiliationFilters v-model="filters" />
 
   <p v-if="error" class="notice" role="alert">{{ error }}</p>
   <p v-else-if="loading" class="muted">Loading reaffiliations…</p>
 
   <template v-else-if="result">
     <p class="count">
-      <span class="figure">{{ result.total }}</span> reaffiliations<span v-if="result.total">
+      <span class="figure">{{ result.total }}</span> reaffiliations<span v-if="filtered">
+        match these filters</span
+      ><span v-if="result.total">
         · showing {{ firstOnPage }}–{{ lastOnPage }}</span
       >
     </p>
@@ -449,8 +476,8 @@ const lastOnPage = computed(() =>
       :show-actions="hasAnyAction"
       compact-actions
       :empty-text="
-        search || status !== 'all'
-          ? 'No reaffiliation on this page matches those filters. Try another page or clear them.'
+        filtered || status !== 'all'
+          ? 'No reaffiliation matches those filters. Try fewer or clear them.'
           : 'No reaffiliations recorded yet.'
       "
     >
@@ -516,9 +543,11 @@ const lastOnPage = computed(() =>
         :error="degreesError"
         :option-label="degreeLabel"
         :empty-text="
-          degreeCampus
-            ? 'No degree programs recorded for this campus yet.'
-            : 'No degree programs recorded yet.'
+          degreeSearchLoaded
+            ? 'No degree program matches that search.'
+            : degreeCampus
+              ? 'No degree programs recorded for this campus yet.'
+              : 'No degree programs recorded yet.'
         "
         @update:page="changeDegreePage"
         @select="(degree) => pickDegree(degree, set)"
@@ -539,6 +568,15 @@ const lastOnPage = computed(() =>
               </option>
             </select>
             <p v-if="campusesError" class="hint">{{ campusesError }}</p>
+          </div>
+          <div class="degree-search">
+            <label for="degree-q">Search</label>
+            <input
+              id="degree-q"
+              v-model="degreeSearch"
+              type="search"
+              placeholder="Course, college"
+            />
           </div>
         </template>
       </OptionPickerModal>
@@ -588,10 +626,6 @@ const lastOnPage = computed(() =>
   display: flex;
   gap: 0.9rem;
   align-items: flex-end;
-}
-
-.search {
-  min-width: 18rem;
 }
 
 .count {
@@ -663,6 +697,11 @@ const lastOnPage = computed(() =>
 
 .campus-filter {
   min-width: 16rem;
+}
+
+.degree-search {
+  flex: 1;
+  min-width: 14rem;
 }
 
 .campus-filter .hint {

@@ -1,15 +1,19 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { api } from '@/api/client'
 import DataTable from '@/components/table/DataTable.vue'
 import DeleteModal from '@/components/generic/DeleteModal.vue'
 import { toast } from '@/components/generic/useToast'
+import { useDebounced } from '@/components/generic/useDebounced'
 import { useAuthStore } from '@/stores/auth'
 
 const result = ref(null)
 const loading = ref(true)
 const error = ref('')
+// The box edits `search`; the list follows `query`, which only catches up once
+// typing has paused for a second.
 const search = ref('')
+const query = useDebounced(() => search.value.trim())
 // The admin list is the only one that returns soft-deleted records, so the
 // page can be narrowed to just the active or just the deleted ones.
 const status = ref('all')
@@ -37,6 +41,11 @@ const canRestore = computed(
 const hasAnyAction = computed(() => canEdit.value || canDelete.value || canRestore.value)
 
 onMounted(load)
+watch(query, load)
+
+// Searching quickly can leave an older request still in flight; only the
+// latest one is allowed to land.
+let loadRequest = 0
 
 async function load() {
   if (!canRead.value) {
@@ -44,15 +53,18 @@ async function load() {
     error.value = 'Your account needs read:all to see committees.'
     return
   }
+  const ticket = ++loadRequest
   loading.value = true
   error.value = ''
   try {
-    result.value = await api.getAllCommittees()
+    const res = await api.getAllCommittees({ search: query.value || null })
+    if (ticket === loadRequest) result.value = res
   } catch (e) {
+    if (ticket !== loadRequest) return
     result.value = null
     error.value = e.detail
   } finally {
-    loading.value = false
+    if (ticket === loadRequest) loading.value = false
   }
 }
 
@@ -149,20 +161,18 @@ const rowActions = computed(() => [
   },
 ])
 
-const rows = computed(() => {
-  const list = (result.value?.data ?? [])
+// The search runs server-side; status has no API filter yet, so it narrows
+// what came back.
+const rows = computed(() =>
+  (result.value?.data ?? [])
     .slice()
     .sort((a, b) => categoryNum(a).localeCompare(categoryNum(b)) || a._id.localeCompare(b._id))
-  const q = search.value.trim().toLowerCase()
-  return list.filter((c) => {
-    if (status.value === 'active' && c.is_deleted) return false
-    if (status.value === 'deleted' && !c.is_deleted) return false
-    if (!q) return true
-    return [c._id, c.name, c.category_num].some((v) =>
-      String(v ?? '').toLowerCase().includes(q)
-    )
-  })
-})
+    .filter((c) => {
+      if (status.value === 'active' && c.is_deleted) return false
+      if (status.value === 'deleted' && !c.is_deleted) return false
+      return true
+    })
+)
 </script>
 
 <template>
@@ -199,7 +209,7 @@ const rows = computed(() => {
   <template v-else-if="result">
     <p class="count">
       <span class="figure">{{ rows.length }}</span> committees<span
-        v-if="search || status !== 'all'"
+        v-if="query || status !== 'all'"
       >
         match</span
       >
@@ -212,7 +222,7 @@ const rows = computed(() => {
       :actions="rowActions"
       :show-actions="hasAnyAction"
       :empty-text="
-        search || status !== 'all'
+        query || status !== 'all'
           ? 'No committee matches those filters.'
           : 'No committees recorded yet.'
       "

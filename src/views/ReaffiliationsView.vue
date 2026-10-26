@@ -7,6 +7,13 @@ import DataTable from '../components/table/DataTable.vue'
 import RowActionMenu from '../components/table/RowActionMenu.vue'
 import TablePager from '../components/table/TablePager.vue'
 import DeleteModal from '@/components/generic/DeleteModal.vue'
+import ReaffiliationFilters from '@/components/reaffiliation/ReaffiliationFilters.vue'
+import {
+  emptyReaffFilters,
+  hasReaffFilters,
+  reaffFilterParams,
+} from '@/components/reaffiliation/reaffFilters'
+import { useDebounced } from '@/components/generic/useDebounced'
 import posthog from 'posthog-js'
 
 const isPostHogConfigured = inject('isPostHogConfigured')
@@ -17,7 +24,11 @@ const page = ref(1)
 const result = ref(null)
 const loading = ref(true)
 const error = ref('')
-const search = ref('')
+// The dropdowns edit `filters`; the list follows `appliedFilters`, which only
+// catches up once they have been left alone for a second.
+const filters = ref(emptyReaffFilters())
+const appliedFilters = useDebounced(filters)
+const filtered = computed(() => hasReaffFilters(appliedFilters.value))
 const auth = useAuthStore()
 
 const canRead = computed(() => auth.can('read:all', 'read:member'))
@@ -47,11 +58,19 @@ onMounted(async () => {
   }
 })
 
-watch(selected, () => {
-  page.value = 1
-  load()
-})
+// A new semester or filter starts over from page 1; when the list is already
+// there, the page watcher will not fire, so the load is called directly.
+function reload() {
+  if (page.value === 1) load()
+  else page.value = 1
+}
+
+watch([selected, appliedFilters], reload)
 watch(page, load)
+
+// Changing filters quickly can leave an older request still in flight; only
+// the latest one is allowed to land.
+let loadRequest = 0
 
 async function load() {
   if (!selected.value) return
@@ -60,20 +79,24 @@ async function load() {
     error.value = 'Your account needs read:member or read:all to see this list.'
     return
   }
+  const ticket = ++loadRequest
   loading.value = true
   error.value = ''
   try {
-    result.value = await api.getReaffiliations({
+    const res = await api.getReaffiliations({
       year: selected.value.slice(0, 4),
       sem: selected.value.slice(4),
+      ...reaffFilterParams(appliedFilters.value),
       include_member_data: true,
       page: page.value,
     })
+    if (ticket === loadRequest) result.value = res
   } catch (e) {
+    if (ticket !== loadRequest) return
     result.value = null
     error.value = e.detail
   } finally {
-    loading.value = false
+    if (ticket === loadRequest) loading.value = false
   }
 }
 
@@ -161,17 +184,7 @@ const menuItems = computed(() => [
   },
 ])
 
-// Filters the loaded page. Server-side name search is not exposed yet.
-const rows = computed(() => {
-  const list = result?.value?.data ?? []
-  const q = search.value.trim().toLowerCase()
-  if (!q) return list
-  return list.filter((r) =>
-    [r?.member.student_number, r?.member.up_mail, r?.member._id]
-      .filter(Boolean)
-      .some((v) => String(v).toLowerCase().includes(q))
-  )
-})
+const rows = computed(() => result.value?.data ?? [])
 
 const firstOnPage = computed(() =>
   result.value?.total ? (result.value.page - 1) * result.value.page_size + 1 : 0
@@ -197,12 +210,10 @@ const lastOnPage = computed(() =>
           <option v-if="!semesters.length" :value="selected">{{ selected }}</option>
         </select>
       </div>
-      <div class="search">
-        <label for="q">Find on this page</label>
-        <input id="q" v-model="search" type="search" placeholder="Name, student number, email" />
-      </div>
     </div>
   </header>
+
+  <ReaffiliationFilters v-model="filters" />
 
   <p v-if="error" class="notice" role="alert">{{ error }}</p>
   <p v-else-if="loading" class="muted">Loading {{ selected }}…</p>
@@ -210,8 +221,10 @@ const lastOnPage = computed(() =>
   <template v-else-if="result">
     <p class="count">
       <span class="figure">{{ result.total }}</span> members reaffiliated in {{ selected }}<span
-        v-if="result.total"
+        v-if="filtered"
       >
+        that match these filters</span
+      ><span v-if="result.total">
         · showing {{ firstOnPage }}–{{ lastOnPage }}</span
       >
     </p>
@@ -223,8 +236,8 @@ const lastOnPage = computed(() =>
       :show-actions="hasAnyAction"
       compact-actions
       :empty-text="
-        search
-          ? 'No one on this page matches that search. Try another page or clear the search.'
+        filtered
+          ? 'No reaffiliation this semester matches those filters. Try fewer or clear them.'
           : 'No reaffiliations recorded for this semester yet.'
       "
     >
@@ -280,10 +293,6 @@ const lastOnPage = computed(() =>
   display: flex;
   gap: 0.9rem;
   align-items: flex-end;
-}
-
-.search {
-  min-width: 15rem;
 }
 
 .count {

@@ -852,29 +852,76 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
   gap: 0.4rem;
 }
 
-.choice {
+/* Scoped through `.sem` so it outranks `.field label` above, which would
+   otherwise flatten these back into block labels with no padding. The padding,
+   border and line box match the global input, so the tiles stand level with
+   the year and member number fields; the fill is left to the ID group. */
+.sem .choice {
   display: flex;
   align-items: center;
-  gap: 0.4rem;
+  gap: 0.5rem;
   margin: 0;
-  padding: 0.5rem 0.75rem;
-  background: var(--surface);
+  padding: 0.55rem 0.75rem;
+  font-size: inherit;
+  color: var(--ink);
+  background: transparent;
   border: 1px solid var(--rule);
   border-radius: 2px;
   cursor: pointer;
-  color: var(--ink);
-  font-size: 0.9rem;
+  transition: border-color 0.12s;
 }
 
-.choice.picked {
+.sem .choice:hover {
+  border-color: var(--slate);
+}
+
+.sem .choice.picked {
   border-color: var(--maroon);
-  box-shadow: inset 2px 0 0 var(--maroon);
 }
 
-.choice input {
-  width: auto;
+.sem .choice:has(input:disabled) {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* Drawn by hand: the global input rule would otherwise wrap the native radio
+   in a padded white box. */
+.choice input[type='radio'] {
+  appearance: none;
+  display: grid;
+  place-content: center;
+  flex-shrink: 0;
+  width: 1rem;
+  height: 1rem;
   margin: 0;
-  accent-color: var(--maroon);
+  padding: 0;
+  background: transparent;
+  border: 1px solid var(--slate);
+  border-radius: 50%;
+  cursor: inherit;
+}
+
+.choice input[type='radio']::before {
+  content: '';
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: var(--maroon);
+  transform: scale(0);
+  transition: transform 0.12s;
+}
+
+.choice input[type='radio']:checked {
+  border-color: var(--maroon);
+}
+
+.choice input[type='radio']:checked::before {
+  transform: scale(1);
+}
+
+.choice input[type='radio']:focus-visible {
+  outline: 2px solid var(--maroon);
+  outline-offset: 2px;
 }
 
 /* Member number: text input (so the padding shows) with its own spinner. */

@@ -17,6 +17,8 @@ const props = defineProps({
   /** The custom confirmation message. Ignored when the default slot is used. */
   modalMessage: { type: String, default: 'This action cannot be undone.' },
   confirmLabel: { type: String, default: 'Delete' },
+  /** Replaces the confirm label while the caller's operation runs. */
+  busyLabel: { type: String, default: 'Deleting…' },
   cancelLabel: { type: String, default: 'Cancel' },
   /** Disables the buttons and shows progress while the caller's delete runs. */
   busy: { type: Boolean, default: false },
@@ -67,7 +69,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
         <div class="modal-footer">
           <button class="btn btn-quiet" :disabled="busy" @click="close">{{ cancelLabel }}</button>
           <button class="btn btn-danger" :disabled="busy" @click="emit('confirm')">
-            {{ busy ? 'Deleting…' : confirmLabel }}
+            {{ busy ? busyLabel : confirmLabel }}
           </button>
         </div>
 

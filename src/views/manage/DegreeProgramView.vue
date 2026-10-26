@@ -7,6 +7,7 @@ import DataTable from '@/components/table/DataTable.vue'
 import TablePager from '@/components/table/TablePager.vue'
 import AddEditModal from '@/components/generic/AddEditModal.vue'
 import DeleteModal from '@/components/generic/DeleteModal.vue'
+import { useDebounced } from '@/components/generic/useDebounced'
 import posthog from 'posthog-js'
 
 const isPostHogConfigured = inject('isPostHogConfigured')
@@ -16,7 +17,10 @@ const page = ref(1)
 const result = ref(null)
 const loading = ref(true)
 const error = ref('')
+// The box edits `search`; the list follows `query`, which only catches up once
+// typing has paused for a second.
 const search = ref('')
+const query = useDebounced(() => search.value.trim())
 
 // Add-degree modal, plus the state AddEditModal renders while the create runs.
 const adding = ref(false)
@@ -42,6 +46,16 @@ const hasAnyAction = computed(() => canEdit.value || canDelete.value)
 
 onMounted(load)
 watch(page, load)
+// A new search starts over from page 1; when the list is already there, the
+// page watcher will not fire, so the load is called directly.
+watch(query, () => {
+  if (page.value === 1) load()
+  else page.value = 1
+})
+
+// Searching quickly can leave an older request still in flight; only the
+// latest one is allowed to land.
+let loadRequest = 0
 
 async function load() {
   if (!canRead.value) {
@@ -49,15 +63,18 @@ async function load() {
     error.value = 'Your account needs read:all to see degree programs.'
     return
   }
+  const ticket = ++loadRequest
   loading.value = true
   error.value = ''
   try {
-    result.value = await api.getDegrees({ page: page.value })
+    const res = await api.getDegrees({ page: page.value, search: query.value || null })
+    if (ticket === loadRequest) result.value = res
   } catch (e) {
+    if (ticket !== loadRequest) return
     result.value = null
     error.value = e.detail
   } finally {
-    loading.value = false
+    if (ticket === loadRequest) loading.value = false
   }
 }
 
@@ -223,17 +240,7 @@ const rowActions = computed(() => [
   },
 ])
 
-// Filters the loaded page. Server-side search is not exposed yet.
-const rows = computed(() => {
-  const list = result.value?.data ?? []
-  const q = search.value.trim().toLowerCase()
-  if (!q) return list
-  return list.filter((d) =>
-    [d.course_name, d.campus_id, d.college].some((v) =>
-      String(v ?? '').toLowerCase().includes(q)
-    )
-  )
-})
+const rows = computed(() => result.value?.data ?? [])
 
 const firstOnPage = computed(() =>
   result.value?.total ? (result.value.page - 1) * result.value.page_size + 1 : 0
@@ -251,7 +258,7 @@ const lastOnPage = computed(() =>
     </div>
     <div class="controls">
       <div class="search">
-        <label for="q">Find on this page</label>
+        <label for="q">Search</label>
         <input id="q" v-model="search" type="search" placeholder="Course, campus, college" />
       </div>
       <button v-if="canCreate" class="btn" @click="addDegree">
@@ -266,7 +273,9 @@ const lastOnPage = computed(() =>
 
   <template v-else-if="result">
     <p class="count">
-      <span class="figure">{{ result.total }}</span> degree programs<span v-if="result.total">
+      <span class="figure">{{ result.total }}</span> degree programs<span v-if="query">
+        match “{{ query }}”</span
+      ><span v-if="result.total">
         · showing {{ firstOnPage }}–{{ lastOnPage }}</span
       >
     </p>
@@ -278,8 +287,8 @@ const lastOnPage = computed(() =>
       :actions="rowActions"
       :show-actions="hasAnyAction"
       :empty-text="
-        search
-          ? 'No degree program on this page matches that search. Try another page or clear the search.'
+        query
+          ? 'No degree program matches that search.'
           : 'No degree programs recorded yet.'
       "
     />

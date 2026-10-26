@@ -32,9 +32,9 @@ function defaultMessage(status) {
 }
 
 
-const instance = axios.create({ 
-  baseURL: BASE, 
-  timeout: 10000, // 10 second timeout for cold start concerns
+const instance = axios.create({
+  baseURL: BASE,
+  timeout: 15000, // the longest any call may wait, cold starts included
   headers: { 
     Accept: 'application/json', 
     ...(BYPASS && {'x-vercel-protection-bypass': BYPASS}) 
@@ -108,12 +108,17 @@ instance.interceptors.response.use(
 )
 
 // axios drops null and undefined params but keeps '' as `?key=`; the API wants
-// those absent entirely.
+// those absent entirely. Arrays go out comma-separated (`?designation=A,B`),
+// the form the multi-value search filters take, and an empty one is dropped.
 function cleanParams(params) {
   if (!params) return undefined
   const out = {}
   for (const [k, v] of Object.entries(params)) {
-    if (v !== undefined && v !== null && v !== '') out[k] = v
+    if (Array.isArray(v)) {
+      if (v.length) out[k] = v.join(',')
+    } else if (v !== undefined && v !== null && v !== '') {
+      out[k] = v
+    }
   }
   return out
 }
@@ -165,14 +170,17 @@ export const api = {
 
   logout: () => request('/logout', { method: 'POST' }),
 
-  getCommittees: () => request('/committees'),
-  getAllCommittees: ({ page = 1 } = {}) => request('/admin/committees', { params: { page } }),
+  getCommittees: ({ include_sub_committees = false, search = null } = {}) =>
+    request('/committees', { params: { include_sub_committees, search } }),
+  getAllCommittees: ({ page = 1, search = null } = {}) => request('/admin/committees', { params: { page, search } }),
+  getSubcommittees: ({ search = null } = {}) => request('/committees/subcommittees', { params: { search } }),
   deleteCommittee: (comm_id) => request(`/committees/${comm_id}`, { method: 'DELETE' }),
   deleteSubcommittee: (comm_id, subcommittee) => request(`/committees/${comm_id}/${subcommittee}`, { method: 'DELETE' }),
   restoreCommittee: (comm_id) => request(`/admin/restore/committee/${comm_id}`, { method: 'PATCH' }),
 
-  getCampusDegreePrograms: (campus_id, page = 1) => request(`/campus/${campus_id}/degrees`, { params: { page }}),
-  getDegrees: ({ page = 1 }) => request('/degrees', { params: { page }}), // NOTE: this will be updated when the sort is handled
+  getCampusDegreePrograms: (campus_id, { page = 1, search = null } = {}) =>
+    request(`/campus/${campus_id}/degrees`, { params: { page, search }}),
+  getDegrees: ({ page = 1, search = null, sort = null } = {}) => request('/degrees', { params: { page, search, sort }}),
   addDegree: ({ campus_id, course_name, college = null, college_long = null }) =>
     request(`/campus/${campus_id}/degrees`, {
       method: 'POST',
@@ -188,27 +196,54 @@ export const api = {
 
   getReaffiliationsSummary: ({ year, semester = null, start_semester = null, end_semester = null}) => request(`/reaffiliations/summary`, { params: { year, semester, start_semester, end_semester }}),
   
-  // Analytics aggregates server-side and regularly outruns the 5s default.
   fetchAnalysis: (query) => request('/analytics', { method: 'POST', body: query, timeout: 30000 }),
 
-  getMembers: ({ year, sem, page = 1 }) => request('/members', { params: { year, sem, page } }),
+  getMembers: ({ year, sem, search = null, page = 1 }) => request('/members', { params: { year, sem, search, page } }),
   addMember: (member) => request('/members', { method: 'POST', body: dropNull(member) }),
   getSingleMemberHistory: ({ dssoc_id }) => request(`/members/history/${dssoc_id}`),
   editMember: (dssoc_id, member) => request(`/members/${dssoc_id}`, { method: 'PATCH', body: member }),
   deleteMember: (dssoc_id) => request(`/members/${dssoc_id}`, { method: "DELETE" }),
+  // The surviving member takes every non-null field in `merge`; the other one
+  // is deleted and its reaffiliations are moved over.
+  mergeMembers: ({ surviving_id, nonsurviving_id, merge = {} }) =>
+    request('/members/merge', { method: 'POST', body: { surviving_id, nonsurviving_id, merge: dropNull(merge) } }),
 
-  getCampuses: () => request('/campus'),
+  getCampuses: ({ search = null } = {}) => request('/campus', { params: { search } }),
 
-  getReaffiliations: ({ year, sem, campus_id = null, comm_id = null, include_member_data = false, page = 1}) => 
-    request('/reaffiliations', { params: { year, sem, campus_id, comm_id, include_member_data, page } }),
+  // The search filters each take one value or an array of them; an array is
+  // matched as "any of".
+  getReaffiliations: ({
+    year,
+    sem,
+    degree_id = null,
+    comm_id = null,
+    year_level = null,
+    designation = null,
+    classification = null,
+    include_member_data = false,
+    page = 1,
+  }) =>
+    request('/reaffiliations', {
+      params: { year, sem, degree_id, comm_id, year_level, designation, classification, include_member_data, page },
+    }),
   updateReaffiliation: ( id, { degree_id = null, year_level = null, designation = null, classification = null }) =>
     request(`/reaffiliations/reaff/${id}`, {
       method: 'PATCH',
       body: dropNull({ degree_id, year_level, designation, classification }),
     }),
   deleteReaffiliation: ( id ) => request(`/reaffiliations/reaff/${id}`, { method: 'DELETE' }, ),
-  getAllReaffiliations: ({ page = 1, include_member_data = false } = {}) =>
-    request('/admin/reaffiliations', { params: { page, include_member_data }}),
+  getAllReaffiliations: ({
+    degree_id = null,
+    comm_id = null,
+    year_level = null,
+    designation = null,
+    classification = null,
+    include_member_data = false,
+    page = 1,
+  } = {}) =>
+    request('/admin/reaffiliations', {
+      params: { degree_id, comm_id, year_level, designation, classification, include_member_data, page },
+    }),
   restoreReaffiliation: (reaff_id) => request(`/admin/restore/reaff/${reaff_id}`, { method: 'PATCH' }),
   
   getSingleReaffiliationHistory: (reaff_id) => request(`/reaffiliations/history/${reaff_id}`),
@@ -228,12 +263,12 @@ export const api = {
   getUser: (user_id) => request('/user', { params: { user_id }}),
   updateUser: (user_id, { username = null, role_ids = null }) => request(`/user/${user_id}`, { method: 'PATCH', body: { username, role_ids }}),
   addUser: (username, password) => request('/user/create', { method: 'POST', body: { username, password }}),
-  getUsers: ({ page = 1 }) => request('/admin/users', { params: { page }}),
+  getUsers: ({ page = 1, search = null } = {}) => request('/admin/users', { params: { page, search }}),
   deleteUser: (user_id) => request(`/user/${user_id}`, { method: 'DELETE' }),
   restoreUser: (user_id) => request(`/admin/restore/user/${user_id}`, { method: 'PATCH' }),
 
-  getUserRoles: ({ page = 1 }) => request('user-roles', { params: { page }}),
-  getAllUserRoles: ({ page = 1 }) => request('/admin/user-roles', { params: { page }}),
+  getUserRoles: ({ page = 1, search = null } = {}) => request('/user-roles', { params: { page, search }}),
+  getAllUserRoles: ({ page = 1, search = null } = {}) => request('/admin/user-roles', { params: { page, search }}),
   addUserRole: ({ role_name, description, permissions}) => request('/user-roles', { method: 'POST', body: { role_name, description, permissions }}),
   updateUserRole: (user_role_id, { role_name = null, description = null, permissions = null }) =>
     request('/user-roles', {
